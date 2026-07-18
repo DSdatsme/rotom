@@ -1,0 +1,44 @@
+[project]
+name = "rotom-api"
+version = "0.1.0"
+description = "rotom personal AI assistant — API, agent, triage, Telegram bot"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic-settings>=2.7",
+    "sqlalchemy>=2.0",
+    "apscheduler>=3.11,<4",
+    "python-telegram-bot>=21.10",
+    "langgraph>=0.3",
+    "langgraph-checkpoint-sqlite>=2.0",
+    "langchain-core>=0.3",
+    "langchain-anthropic>=0.3",
+    "langchain-google-genai>=2.0",
+    "google-api-python-client>=2.160",
+    "google-auth>=2.38",
+    "google-auth-oauthlib>=1.2",
+    "aiosqlite>=0.21",
+    "langchain-groq>=0.2",
+    "inngest>=0.5.18",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "httpx>=0.28",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = [
+    # Starlette's TestClient warns that it will require httpx2 in a future release;
+    # not actionable from our code on the pinned stack — silence the noise.
+    # (StarletteDeprecationWarning subclasses UserWarning, not DeprecationWarning.)
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:UserWarning",
+]
+
+[tool.uv]
+package = false

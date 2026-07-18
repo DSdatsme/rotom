@@ -1,0 +1,13 @@
+Invoice #4521 from Acme Corp
+
+Dear valued customer,
+
+Please find attached invoice #4521 for services rendered in May 2026.
+Total due: $1,250.00
+Payment due date: June 30, 2026
+
+Please remit payment via bank transfer to the account details on the invoice.
+Thank you for your business.
+
+Best regards,
+Acme Corp Billing Team

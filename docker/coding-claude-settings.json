@@ -1,0 +1,8 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "deny": ["Read(~/**)"]
+  }
+}

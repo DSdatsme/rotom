@@ -1,0 +1,16 @@
+.env
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.pdf
+.vercel
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+node_modules/
+.next/
+credentials.json
+token*.json
+.DS_Store

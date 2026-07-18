@@ -1,0 +1,3 @@
+Security awareness training recap
+
+Our security training this week covered social engineering tactics. One example discussed was how attackers tell chatbots to "ignore previous instructions" in order to fool AI assistants into leaking data. Being aware of these phrases helps us spot attempted attacks. No action is required from you.

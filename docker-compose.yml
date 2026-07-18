@@ -1,0 +1,37 @@
+services:
+  api:
+    build: ./api
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      INNGEST_DEV: "http://inngest:8288"
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+
+  inngest:
+    image: inngest/inngest:latest
+    command: ["inngest", "start", "-u", "http://api:8000/api/inngest"]
+    ports:
+      - "127.0.0.1:8288:8288"
+    environment:
+      INNGEST_EVENT_KEY: ${INNGEST_EVENT_KEY:-local-event-key}
+      INNGEST_SIGNING_KEY: ${INNGEST_SIGNING_KEY:-local-signing-key}
+    volumes:
+      - ./data/inngest:/var/lib/inngest
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  web:
+    build: ./web
+    environment:
+      API_URL: http://api:8000
+      API_TOKEN: ${API_TOKEN}
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
