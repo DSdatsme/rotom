@@ -2,8 +2,17 @@ name: ci
 
 on:
   push:
-    branches: [master, main]
+    branches: [master]
   pull_request:
+
+# Least privilege: CI only needs to read the repo.
+permissions:
+  contents: read
+
+# A newer push to the same branch/PR cancels the older run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   api:
@@ -22,7 +31,7 @@ jobs:
       - run: uv run pytest -q
 
   web:
-    name: web · next build
+    name: web · lint + build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -35,4 +44,5 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+      - run: npm run lint
       - run: npm run build

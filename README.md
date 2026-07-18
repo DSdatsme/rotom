@@ -9,6 +9,14 @@
   and a dashboard for reviewing AI-drafted replies.
 </p>
 
+<p align="center">
+  <a href="https://github.com/DSdatsme/rotom/actions/workflows/ci.yml"><img src="https://github.com/DSdatsme/rotom/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/DSdatsme/rotom/actions/workflows/codeql.yml"><img src="https://github.com/DSdatsme/rotom/actions/workflows/codeql.yml/badge.svg" alt="CodeQL" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
+  <img src="https://img.shields.io/badge/python-3.12-blue.svg" alt="Python 3.12" />
+  <img src="https://img.shields.io/badge/Next.js-16-black.svg" alt="Next.js 16" />
+</p>
+
 ```
 Telegram ──▶ Chat agent (LangGraph) ──▶ Triage pipeline ──▶ SQLite
                                             ▲                  │

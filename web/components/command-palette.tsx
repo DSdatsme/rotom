@@ -68,7 +68,6 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     }
   }
 
-  let idx = -1;
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-[12vh]"
@@ -106,8 +105,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                 {sec.header}
               </div>
               {sec.rows.map((row) => {
-                idx += 1;
-                const i = idx;
+                const i = flat.indexOf(row);
                 const active = i === sel;
                 return (
                   <button
