@@ -1,0 +1,45 @@
+"""Merge calendar events across all accounts into one sorted, resilient list."""
+
+import logging
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+
+def _normalize_event(raw: dict, account: str) -> dict:
+    """Flatten a Calendar API event resource into a flat display dict.
+
+    All-day events carry date-only start/end (Google's end.date is exclusive of the last
+    day — multi-day all-day spanning is not rendered in v1, only the start day)."""
+    start = raw.get("start", {})
+    end = raw.get("end", {})
+    all_day = "date" in start and "dateTime" not in start
+    return {
+        "account": account,
+        "event_id": raw.get("id", ""),
+        "title": raw.get("summary") or "(no title)",
+        "start": start.get("date") if all_day else start.get("dateTime", ""),
+        "end": end.get("date") if all_day else end.get("dateTime", ""),
+        "all_day": all_day,
+        "location": raw.get("location") or None,
+    }
+
+
+def list_events_for_range(accounts: list, time_min: datetime, time_max: datetime) -> tuple[list[dict], list[dict]]:
+    """Fetch + normalize + merge + sort events across all accounts.
+
+    Never raises: one account's failure is caught, logged, and reported in the returned
+    errors list — the other accounts' events are still returned.
+    """
+    events: list[dict] = []
+    errors: list[dict] = []
+    for acc in accounts:
+        try:
+            raw_events = acc.list_events(time_min, time_max)
+        except Exception as exc:
+            logger.exception("calendar fetch failed for account %r", acc.account)
+            errors.append({"account": acc.account, "message": str(exc)})
+            continue
+        events.extend(_normalize_event(e, acc.account) for e in raw_events)
+    events.sort(key=lambda e: e["start"])
+    return events, errors
