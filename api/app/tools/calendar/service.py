@@ -1,7 +1,7 @@
 """Merge calendar events across all accounts into one sorted, resilient list."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -25,21 +25,38 @@ def _normalize_event(raw: dict, account: str) -> dict:
     }
 
 
+def _sort_key(event: dict) -> datetime:
+    """Compute an absolute-instant sort key for a normalized event.
+
+    Timed events carry an ISO 8601 string with a UTC offset (or 'Z'); it's parsed into an
+    aware datetime and normalized to UTC so events from accounts with different calendar
+    timezones compare correctly. All-day events carry a date-only string — treated as
+    midnight UTC of that date, a reasonable v1 convention since the frontend already renders
+    all-day events in a separate row from timed ones.
+    """
+    value = event["start"]
+    parsed = datetime.fromisoformat(value)
+    if event["all_day"]:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def list_events_for_range(accounts: list, time_min: datetime, time_max: datetime) -> tuple[list[dict], list[dict]]:
     """Fetch + normalize + merge + sort events across all accounts.
 
-    Never raises: one account's failure is caught, logged, and reported in the returned
-    errors list — the other accounts' events are still returned.
+    Never raises: one account's failure — whether fetching or normalizing its events —
+    is caught, logged, and reported in the returned errors list — the other accounts'
+    events are still returned.
     """
     events: list[dict] = []
     errors: list[dict] = []
     for acc in accounts:
         try:
             raw_events = acc.list_events(time_min, time_max)
+            events.extend(_normalize_event(e, acc.account) for e in raw_events)
         except Exception as exc:
             logger.exception("calendar fetch failed for account %r", acc.account)
             errors.append({"account": acc.account, "message": str(exc)})
             continue
-        events.extend(_normalize_event(e, acc.account) for e in raw_events)
-    events.sort(key=lambda e: e["start"])
+    events.sort(key=_sort_key)
     return events, errors

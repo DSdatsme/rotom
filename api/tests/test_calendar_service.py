@@ -92,3 +92,30 @@ class TestListEventsForRange:
         from app.tools.calendar.service import list_events_for_range
 
         assert list_events_for_range([], None, None) == ([], [])
+
+    def test_sorts_by_absolute_instant_not_raw_string(self):
+        from app.tools.calendar.service import list_events_for_range
+
+        accounts = [
+            # 05:00 UTC — string-sorts first ("...T05..." < "...T09...")
+            _FakeAccount("a", events=[_timed_event(event_id="a1", start="2026-07-28T05:00:00+00:00",
+                                                    end="2026-07-28T05:30:00+00:00")]),
+            # 09:00+05:30 == 03:30 UTC — actually earlier in real time
+            _FakeAccount("b", events=[_timed_event(event_id="b1", start="2026-07-28T09:00:00+05:30",
+                                                    end="2026-07-28T09:30:00+05:30")]),
+        ]
+        events, errors = list_events_for_range(accounts, None, None)
+        assert errors == []
+        assert [e["event_id"] for e in events] == ["b1", "a1"]
+
+    def test_normalization_failure_for_one_account_does_not_drop_others(self):
+        from app.tools.calendar.service import list_events_for_range
+
+        accounts = [
+            _FakeAccount("broken", events=[{"id": "bad", "start": None, "end": None}]),
+            _FakeAccount("ok", events=[_timed_event(event_id="ok1")]),
+        ]
+        events, errors = list_events_for_range(accounts, None, None)
+        assert [e["event_id"] for e in events] == ["ok1"]
+        assert len(errors) == 1
+        assert errors[0]["account"] == "broken"
