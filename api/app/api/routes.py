@@ -617,6 +617,37 @@ def create_app(api_token: str) -> FastAPI:
             raise HTTPException(404, f"Reminder {reminder_id} not found or not pending")
         return {"cancelled": True, "id": reminder_id}
 
+    @app.get("/api/calendar/events", dependencies=[Depends(require_auth)])
+    async def get_calendar_events(start: str | None = None, end: str | None = None) -> dict:
+        import asyncio
+        from zoneinfo import ZoneInfo
+
+        from app.config import get_settings
+        from app.tools.calendar.client import load_accounts as load_calendar_accounts
+        from app.tools.calendar.service import list_events_for_range
+
+        settings = get_settings()
+        zone = ZoneInfo(settings.timezone)
+
+        range_start = _parse_date(start).date() if start else datetime.now(zone).date()
+        if end:
+            range_end = _parse_date(end).date()
+        else:
+            range_start -= timedelta(days=range_start.weekday())  # snap back to the week's Monday
+            range_end = range_start + timedelta(days=6)
+
+        time_min = datetime.combine(range_start, datetime.min.time(), tzinfo=zone)
+        time_max = datetime.combine(range_end + timedelta(days=1), datetime.min.time(), tzinfo=zone)
+
+        accounts = load_calendar_accounts(settings)
+        events, errors = await asyncio.to_thread(list_events_for_range, accounts, time_min, time_max)
+        return {
+            "range_start": range_start.isoformat(),
+            "range_end": range_end.isoformat(),
+            "events": events,
+            "errors": errors,
+        }
+
     class SoulUpdate(BaseModel):
         content: str
 
