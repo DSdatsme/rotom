@@ -119,3 +119,25 @@ class TestListEventsForRange:
         assert [e["event_id"] for e in events] == ["ok1"]
         assert len(errors) == 1
         assert errors[0]["account"] == "broken"
+
+    def test_malformed_start_does_not_crash_sort_and_sorts_last(self):
+        """A raw event with `"start": {}` (present but empty — no `date`/`dateTime`)
+        normalizes cleanly to `start=""` (no exception in _normalize_event), but that empty
+        string is not a parseable ISO datetime. The sort step must not let that crash take
+        down the whole response — the malformed event should still show up, pushed to the
+        end, alongside every well-formed event from every account."""
+        from app.tools.calendar.service import list_events_for_range
+
+        malformed = {"id": "bad-start", "summary": "Ghost event", "start": {}, "end": {}}
+        accounts = [
+            _FakeAccount("work", events=[
+                _timed_event(event_id="w1", start="2026-07-28T13:00:00+05:30",
+                             end="2026-07-28T14:00:00+05:30"),
+                malformed,
+            ]),
+            _FakeAccount("personal", events=[_timed_event(event_id="p1", start="2026-07-28T09:00:00+05:30",
+                                                            end="2026-07-28T09:30:00+05:30")]),
+        ]
+        events, errors = list_events_for_range(accounts, None, None)
+        assert errors == []
+        assert [e["event_id"] for e in events] == ["p1", "w1", "bad-start"]

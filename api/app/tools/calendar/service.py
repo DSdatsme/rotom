@@ -33,9 +33,17 @@ def _sort_key(event: dict) -> datetime:
     timezones compare correctly. All-day events carry a date-only string — treated as
     midnight UTC of that date, a reasonable v1 convention since the frontend already renders
     all-day events in a separate row from timed ones.
+
+    Never raises: a malformed `start` (empty string, unparseable text, wrong type — e.g. a
+    raw Calendar API event with no `date`/`dateTime`, which `_normalize_event` turns into
+    `start=""`) falls back to `datetime.max` in UTC, sorting the event to the end instead of
+    blowing up `events.sort()` and discarding every account's already-collected results.
     """
     value = event["start"]
-    parsed = datetime.fromisoformat(value)
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return datetime.max.replace(tzinfo=timezone.utc)
     if event["all_day"]:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
