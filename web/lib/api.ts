@@ -169,6 +169,33 @@ export const parseReminder = (message: string) =>
 export const cancelReminder = (id: number) =>
   apiFetch<{ cancelled: boolean }>(`/api/reminders/${id}`, { method: "DELETE" });
 
+// --- calendar ---
+
+export interface CalendarEvent {
+  account: string;
+  event_id: string;
+  title: string;
+  start: string;
+  end: string;
+  all_day: boolean;
+  location: string | null;
+}
+
+export interface CalendarEventsResponse {
+  range_start: string;
+  range_end: string;
+  events: CalendarEvent[];
+  errors: { account: string; message: string }[];
+}
+
+export const getCalendarEvents = (start?: string, end?: string) => {
+  const params = new URLSearchParams();
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  const qs = params.toString();
+  return apiFetch<CalendarEventsResponse>(`/api/calendar/events${qs ? `?${qs}` : ""}`);
+};
+
 export const getSoul = () => apiFetch<{ content: string }>("/api/soul");
 
 export const updateSoul = (content: string) =>
