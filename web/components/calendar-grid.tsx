@@ -1,8 +1,13 @@
+"use client";
+
+import { useEffect, useRef } from "react";
+
 import type { CalendarEvent } from "@/lib/api";
 import { colorForAccount } from "@/lib/calendar-colors";
 
 const HOUR_HEIGHT = 48; // px per hour row
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const INITIAL_SCROLL_HOUR = 7; // scroll to ~7am so a typical day is in view on load
 
 function dateForDayOffset(weekStart: string, offset: number): string {
   const d = new Date(`${weekStart}T00:00:00Z`);
@@ -18,6 +23,14 @@ function minutesSinceMidnight(iso: string): number {
 }
 
 export function CalendarGrid({ weekStart, events }: { weekStart: string; events: CalendarEvent[] }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = INITIAL_SCROLL_HOUR * HOUR_HEIGHT;
+    }
+  }, []);
+
   const days = Array.from({ length: 7 }, (_, i) => dateForDayOffset(weekStart, i));
 
   const timedByDay = new Map<string, CalendarEvent[]>();
@@ -32,70 +45,87 @@ export function CalendarGrid({ weekStart, events }: { weekStart: string; events:
     bucket.get(day)?.push(ev);
   }
 
+  const accountNames = [...new Set(events.map((ev) => ev.account))].sort();
+
   return (
-    <div className="overflow-x-auto rounded-lg border border-border">
-      <div className="grid grid-cols-[3.5rem_repeat(7,1fr)] border-b border-border">
-        <div />
-        {days.map((day, i) => (
-          <div key={day} className="border-l border-border px-2 py-2 text-center text-sm font-medium">
-            {DAY_LABELS[i]} <span className="text-muted-foreground">{day.slice(5)}</span>
-          </div>
-        ))}
-      </div>
+    <div className="flex flex-col gap-2">
+      {accountNames.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+          {accountNames.map((account) => (
+            <span key={account} className="flex items-center gap-1.5">
+              <span className={`inline-block size-2.5 rounded-full ${colorForAccount(account)}`} />
+              {account}
+            </span>
+          ))}
+        </div>
+      )}
 
-      <div className="grid grid-cols-[3.5rem_repeat(7,1fr)] border-b border-border">
-        <div className="px-2 py-1 text-right text-xs text-muted-foreground">All day</div>
-        {days.map((day) => (
-          <div key={day} className="flex flex-col gap-1 border-l border-border p-1">
-            {allDayByDay.get(day)!.map((ev) => (
-              <span
-                key={`${ev.account}-${ev.event_id}`}
-                className={`truncate rounded px-1.5 py-0.5 text-xs ${colorForAccount(ev.account)}`}
-                title={`${ev.title} (${ev.account})`}
-              >
-                {ev.title}
-              </span>
-            ))}
-          </div>
-        ))}
-      </div>
-
-      <div className="grid grid-cols-[3.5rem_repeat(7,1fr)]">
-        <div>
-          {Array.from({ length: 24 }, (_, h) => (
-            <div
-              key={h}
-              style={{ height: HOUR_HEIGHT }}
-              className="border-t border-border px-2 text-right text-xs text-muted-foreground"
-            >
-              {h === 0 ? "" : `${h}:00`}
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <div className="grid grid-cols-[3.5rem_repeat(7,1fr)] border-b border-border">
+          <div />
+          {days.map((day, i) => (
+            <div key={day} className="border-l border-border px-2 py-2 text-center text-sm font-medium">
+              {DAY_LABELS[i]} <span className="text-muted-foreground">{day.slice(5)}</span>
             </div>
           ))}
         </div>
-        {days.map((day) => (
-          <div key={day} className="relative border-l border-border">
-            {Array.from({ length: 24 }, (_, h) => (
-              <div key={h} style={{ height: HOUR_HEIGHT }} className="border-t border-border" />
-            ))}
-            {timedByDay.get(day)!.map((ev) => {
-              const startMin = minutesSinceMidnight(ev.start);
-              let durationMin = minutesSinceMidnight(ev.end) - startMin;
-              if (durationMin <= 0) durationMin = 24 * 60 - startMin; // crosses midnight: simplify to day's end
-              const top = (startMin / 60) * HOUR_HEIGHT;
-              const height = Math.max((durationMin / 60) * HOUR_HEIGHT, 18);
-              return (
-                <div
+
+        <div className="grid grid-cols-[3.5rem_repeat(7,1fr)] border-b border-border">
+          <div className="px-2 py-1 text-right text-xs text-muted-foreground">All day</div>
+          {days.map((day) => (
+            <div key={day} className="flex flex-col gap-1 border-l border-border p-1">
+              {allDayByDay.get(day)!.map((ev) => (
+                <span
                   key={`${ev.account}-${ev.event_id}`}
-                  className={`absolute right-0.5 left-0.5 overflow-hidden rounded px-1 text-xs ${colorForAccount(ev.account)}`}
-                  style={{ top, height }}
-                  title={`${ev.title} (${ev.account})${ev.location ? " · " + ev.location : ""}`}
+                  className={`truncate rounded px-1.5 py-0.5 text-xs ${colorForAccount(ev.account)}`}
+                  title={`${ev.title} (${ev.account})`}
                 >
                   {ev.title}
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        <div ref={scrollRef} className="max-h-[600px] overflow-y-auto">
+          <div className="grid grid-cols-[3.5rem_repeat(7,1fr)]">
+            <div>
+              {Array.from({ length: 24 }, (_, h) => (
+                <div
+                  key={h}
+                  style={{ height: HOUR_HEIGHT }}
+                  className="border-t border-border px-2 text-right text-xs text-muted-foreground"
+                >
+                  {h === 0 ? "" : `${h}:00`}
                 </div>
-              );
-            })}
+              ))}
+            </div>
+            {days.map((day) => (
+              <div key={day} className="relative border-l border-border">
+                {Array.from({ length: 24 }, (_, h) => (
+                  <div key={h} style={{ height: HOUR_HEIGHT }} className="border-t border-border" />
+                ))}
+                {timedByDay.get(day)!.map((ev) => {
+                  const startMin = minutesSinceMidnight(ev.start);
+                  let durationMin = minutesSinceMidnight(ev.end) - startMin;
+                  if (durationMin <= 0) durationMin = 24 * 60 - startMin; // crosses midnight: simplify to day's end
+                  const top = (startMin / 60) * HOUR_HEIGHT;
+                  const height = Math.max((durationMin / 60) * HOUR_HEIGHT, 18);
+                  return (
+                    <div
+                      key={`${ev.account}-${ev.event_id}`}
+                      className={`absolute right-0.5 left-0.5 overflow-hidden rounded px-1 text-xs ${colorForAccount(ev.account)}`}
+                      style={{ top, height }}
+                      title={`${ev.title} (${ev.account})${ev.location ? " · " + ev.location : ""}`}
+                    >
+                      {ev.title}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
           </div>
-        ))}
+        </div>
       </div>
     </div>
   );
