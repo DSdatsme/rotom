@@ -90,9 +90,24 @@ auto-drafted replies · Conversational draft composer · Next.js dashboard with 
       (no caching/sync job). Scope granted is `calendar.events` (read/write), so Calendar V2
       needs no further re-auth. Spec:
       `docs/superpowers/specs/2026-07-25-calendar-integration-design.md`.
-  - [ ] **Calendar V2** — create/update events from chat with a HITL gate; secondary/shared
-        calendars beyond each account's primary; per-account opt-out; fold today's agenda into
-        the Telegram digest or expose it as a chat tool.
+  - [ ] **Calendar V2** — create/update events from chat with a HITL gate (if event
+        titles/locations are ever fed to an LLM — folded into a digest or exposed as a chat
+        tool — they must go through the same untrusted-content fencing as email; event data is
+        attacker-influenceable, anyone can send a calendar invite); secondary/shared calendars
+        beyond each account's primary; per-account opt-out; fold today's agenda into the
+        Telegram digest or expose it as a chat tool.
+    - [ ] Multi-day events (start before the displayed week, end during/after it, e.g. a trip)
+          are currently dropped entirely from the grid — not just simplified to their start day
+          as originally intended. Worth a clamp-to-week-start fix or at least a "N more"
+          indicator.
+    - [ ] Per-account Calendar API fetches are sequential with no timeout; a hung account
+          stalls the whole page load. Worth `asyncio.gather`-ing the per-account fetches and
+          adding a per-account timeout.
+    - [ ] Raw provider exception strings (e.g. `invalid_scope: Bad Request`) go straight into
+          the error banner; mapping known errors to an actionable message (e.g. "run
+          `auth_setup.py <account>` again") would help.
+    - [ ] Overlapping same-day timed events currently render fully-overlapping (no
+          side-by-side/column layout) — fine for light days, not for busy merged calendars.
 
 ## Iteration 5 — Memory & channels (from blueprint)
 

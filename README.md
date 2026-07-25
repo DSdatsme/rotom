@@ -36,8 +36,8 @@ Telegram ──▶ Chat agent (LangGraph) ──▶ Triage pipeline ──▶ SQ
 
 - A Telegram bot token from [@BotFather](https://t.me/BotFather), and your chat id
   (message [@userinfobot](https://t.me/userinfobot)).
-- A GCP OAuth client (Desktop app type) with the Gmail API enabled —
-  gives you `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET`.
+- A GCP OAuth client (Desktop app type) with the Gmail API **and** Calendar API enabled —
+  gives you `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` (one client/token now covers both).
 - An Anthropic API key.
 
 ### 2. Configure
@@ -59,6 +59,11 @@ uv run python -m app.tools.gmail.auth_setup personal
 # repeat per account; paste the printed GMAIL_<NAME>_REFRESH_TOKEN into .env
 # and list the names in GMAIL_ACCOUNTS=personal,work,...
 ```
+
+This same flow now also grants Calendar access (one refresh token per account covers both
+Gmail and Calendar). **Existing installs must re-run `auth_setup.py` per account** to pick up
+the new scope — an old refresh token issued before this change only has Gmail scopes and
+will fail on Calendar API calls until re-authed.
 
 ### 4. Run
 
@@ -91,6 +96,8 @@ Dashboard: http://localhost:3000 · API: http://localhost:8000/api/health
 - **Observability**: `/email/runs` shows background runs (status, duration, tokens, latency,
   logs); `/observability` charts LLM token usage over time and `/observability/logs` is a
   searchable, live-tailing log explorer. See [`docs/observability/`](./docs/observability/).
+- **Calendar**: `/calendar` shows a merged week view across every linked account's primary
+  calendar, live-fetched from the Google Calendar API.
 
 ## Development
 
