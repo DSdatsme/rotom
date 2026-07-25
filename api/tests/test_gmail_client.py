@@ -183,3 +183,9 @@ def test_build_mime_reply_prefixes_re_and_threads():
 def test_compose_scope_present():
     from app.tools.gmail.client import SCOPES
     assert any("gmail.compose" in s for s in SCOPES)
+
+def test_auth_setup_requests_calendar_scope_too():
+    from app.tools.gmail.auth_setup import SCOPES
+
+    assert any("gmail.readonly" in s for s in SCOPES)
+    assert any("calendar.events" in s for s in SCOPES)

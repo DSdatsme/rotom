@@ -1,4 +1,4 @@
-"""One-time OAuth setup per Gmail account.
+"""One-time OAuth setup per account (Gmail + Calendar share one refresh token).
 
 Run locally (opens a browser for consent):
 
@@ -13,7 +13,10 @@ import sys
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 from app.config import get_settings
-from app.tools.gmail.client import SCOPES
+from app.tools.calendar.client import SCOPES as CALENDAR_SCOPES
+from app.tools.gmail.client import SCOPES as GMAIL_SCOPES
+
+SCOPES = GMAIL_SCOPES + CALENDAR_SCOPES
 
 
 def main() -> None:

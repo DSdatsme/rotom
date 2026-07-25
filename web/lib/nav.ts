@@ -18,7 +18,13 @@ export const NAV_SECTIONS: NavSection[] = [
       { title: "Runs", href: "/email/runs", icon: "History" },
     ],
   },
-  { label: "Workspace", items: [{ title: "Reminders", href: "/reminders", icon: "Bell" }] },
+  {
+    label: "Workspace",
+    items: [
+      { title: "Reminders", href: "/reminders", icon: "Bell" },
+      { title: "Calendar", href: "/calendar", icon: "Calendar" },
+    ],
+  },
   { label: "Settings", items: [{ title: "SOUL Persona", href: "/soul", icon: "Sparkles" }] },
   {
     label: "Observability",

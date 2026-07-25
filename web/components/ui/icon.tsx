@@ -1,4 +1,5 @@
 import {
+  Calendar,
   House,
   Inbox,
   PenLine,
@@ -22,6 +23,7 @@ import {
 
 /** Map of icon-name strings (emitted by view models / nav config) → lucide components. */
 const ICONS: Record<string, LucideIcon> = {
+  Calendar,
   House,
   Inbox,
   PenLine,
