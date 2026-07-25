@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 
 import type { CalendarEvent } from "@/lib/api";
-import { colorForAccount } from "@/lib/calendar-colors";
+import { buildAccountColorMap, PALETTE, SWATCH_PALETTE } from "@/lib/calendar-colors";
 
 const HOUR_HEIGHT = 48; // px per hour row
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -46,6 +46,9 @@ export function CalendarGrid({ weekStart, events }: { weekStart: string; events:
   }
 
   const accountNames = [...new Set(events.map((ev) => ev.account))].sort();
+  // Single source of truth for account -> color, shared by the legend and every event chip
+  // below, so they can never drift apart.
+  const accountColorIndex = buildAccountColorMap(accountNames);
 
   return (
     <div className="flex flex-col gap-2">
@@ -53,7 +56,9 @@ export function CalendarGrid({ weekStart, events }: { weekStart: string; events:
         <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
           {accountNames.map((account) => (
             <span key={account} className="flex items-center gap-1.5">
-              <span className={`inline-block size-2.5 rounded-full ${colorForAccount(account)}`} />
+              <span
+                className={`inline-block size-2.5 rounded-full ${SWATCH_PALETTE[accountColorIndex[account]]}`}
+              />
               {account}
             </span>
           ))}
@@ -77,7 +82,7 @@ export function CalendarGrid({ weekStart, events }: { weekStart: string; events:
               {allDayByDay.get(day)!.map((ev) => (
                 <span
                   key={`${ev.account}-${ev.event_id}`}
-                  className={`truncate rounded px-1.5 py-0.5 text-xs ${colorForAccount(ev.account)}`}
+                  className={`truncate rounded px-1.5 py-0.5 text-xs ${PALETTE[accountColorIndex[ev.account]]}`}
                   title={`${ev.title} (${ev.account})`}
                 >
                   {ev.title}
@@ -114,7 +119,7 @@ export function CalendarGrid({ weekStart, events }: { weekStart: string; events:
                   return (
                     <div
                       key={`${ev.account}-${ev.event_id}`}
-                      className={`absolute right-0.5 left-0.5 overflow-hidden rounded px-1 text-xs ${colorForAccount(ev.account)}`}
+                      className={`absolute right-0.5 left-0.5 overflow-hidden rounded px-1 text-xs ${PALETTE[accountColorIndex[ev.account]]}`}
                       style={{ top, height }}
                       title={`${ev.title} (${ev.account})${ev.location ? " · " + ev.location : ""}`}
                     >

@@ -97,10 +97,14 @@ def test_bad_date_is_422(client):
 
 def test_timezone_boundary_conversion_for_non_utc_settings_timezone(client, monkeypatch):
     """A given start/end day range must convert to the correct UTC-offset time_min/time_max
-    for the configured (non-UTC) settings.timezone — default is Asia/Kolkata, +05:30."""
-    from app.config import get_settings
+    for a configured non-UTC settings.timezone. Pin the timezone explicitly via a Settings
+    instance built with _env_file=None rather than relying on config.py's default / the
+    ambient .env, so this test doesn't break for reasons unrelated to the code under test."""
+    from app.config import Settings
 
-    assert get_settings().timezone == "Asia/Kolkata"
+    monkeypatch.setattr(
+        "app.config.get_settings", lambda: Settings(api_token=TOKEN, timezone="Asia/Kolkata", _env_file=None)
+    )
 
     captured: dict = {}
 
