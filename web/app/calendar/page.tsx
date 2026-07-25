@@ -45,13 +45,13 @@ export default async function CalendarPage({
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" render={<Link href={`/calendar?start=${prevStart}`} />}>
+          <Button variant="outline" size="sm" nativeButton={false} render={<Link href={`/calendar?start=${prevStart}`} />}>
             ← Prev
           </Button>
-          <Button variant="outline" size="sm" render={<Link href="/calendar" />}>
+          <Button variant="outline" size="sm" nativeButton={false} render={<Link href="/calendar" />}>
             Today
           </Button>
-          <Button variant="outline" size="sm" render={<Link href={`/calendar?start=${nextStart}`} />}>
+          <Button variant="outline" size="sm" nativeButton={false} render={<Link href={`/calendar?start=${nextStart}`} />}>
             Next →
           </Button>
         </div>
