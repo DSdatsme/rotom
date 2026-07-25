@@ -31,7 +31,7 @@ export default async function CalendarPage({
     );
   }
 
-  const { range_start, range_end, events, errors } = data;
+  const { range_start, range_end, accounts, events, errors } = data;
   const prevStart = addDays(range_start, -7);
   const nextStart = addDays(range_start, 7);
 
@@ -57,16 +57,7 @@ export default async function CalendarPage({
         </div>
       </div>
 
-      {errors.length > 0 && (
-        <Alert variant="destructive">
-          <AlertTitle>Some accounts couldn&apos;t be loaded</AlertTitle>
-          <AlertDescription>
-            {errors.map((e) => `${e.account}: ${e.message}`).join(" · ")}
-          </AlertDescription>
-        </Alert>
-      )}
-
-      <CalendarGrid weekStart={range_start} events={events} />
+      <CalendarGrid weekStart={range_start} events={events} accounts={accounts} errors={errors} />
     </div>
   );
 }

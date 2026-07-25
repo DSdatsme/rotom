@@ -70,6 +70,25 @@ def test_one_account_error_is_reported_not_fatal(client, monkeypatch):
     assert body["errors"] == [{"account": "broken", "message": "token expired"}]
 
 
+def test_response_lists_every_configured_account_regardless_of_outcome(client, monkeypatch):
+    """`accounts` must include every configured account name, even one with zero events and
+    no error, so the frontend can show a full account legend, not just accounts that happen
+    to have data this week."""
+    monkeypatch.setattr(
+        "app.tools.calendar.client.load_accounts",
+        lambda settings: [
+            _FakeAccount("broken", error=RuntimeError("token expired")),
+            _FakeAccount("has_events", events=[_timed_event("e1", "Standup",
+                          "2026-07-28T09:00:00+05:30", "2026-07-28T09:30:00+05:30")]),
+            _FakeAccount("empty_but_ok", events=[]),
+        ],
+    )
+    resp = client.get("/api/calendar/events?start=2026-07-28&end=2026-07-28", headers=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["accounts"] == ["broken", "has_events", "empty_but_ok"]
+
+
 def test_no_params_defaults_to_current_week_monday_start(client, monkeypatch):
     monkeypatch.setattr("app.tools.calendar.client.load_accounts", lambda settings: [])
     resp = client.get("/api/calendar/events", headers=AUTH)

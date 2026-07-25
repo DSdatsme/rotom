@@ -19,6 +19,11 @@ export const SWATCH_PALETTE = [
   "bg-cyan-500",
 ];
 
+/** Legend styling for an account whose fetch errored — a fixed red, not part of the
+ * per-account palette (an errored account carries no event data to color-code). */
+export const ERROR_SWATCH = "bg-red-500";
+export const ERROR_TEXT = "text-red-500 dark:text-red-400";
+
 /**
  * Assign each account a stable index into PALETTE / SWATCH_PALETTE by its position in a
  * sorted, deduplicated account list — not by hashing the account name in isolation. A

@@ -646,6 +646,7 @@ def create_app(api_token: str) -> FastAPI:
         return {
             "range_start": range_start.isoformat(),
             "range_end": range_end.isoformat(),
+            "accounts": [acc.account for acc in accounts],
             "events": events,
             "errors": errors,
         }

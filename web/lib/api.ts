@@ -181,11 +181,17 @@ export interface CalendarEvent {
   location: string | null;
 }
 
+export interface CalendarError {
+  account: string;
+  message: string;
+}
+
 export interface CalendarEventsResponse {
   range_start: string;
   range_end: string;
+  accounts: string[];
   events: CalendarEvent[];
-  errors: { account: string; message: string }[];
+  errors: CalendarError[];
 }
 
 export const getCalendarEvents = (start?: string, end?: string) => {

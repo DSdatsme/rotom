@@ -2,8 +2,8 @@
 
 import { useEffect, useRef } from "react";
 
-import type { CalendarEvent } from "@/lib/api";
-import { buildAccountColorMap, PALETTE, SWATCH_PALETTE } from "@/lib/calendar-colors";
+import type { CalendarError, CalendarEvent } from "@/lib/api";
+import { buildAccountColorMap, ERROR_SWATCH, ERROR_TEXT, PALETTE, SWATCH_PALETTE } from "@/lib/calendar-colors";
 
 const HOUR_HEIGHT = 48; // px per hour row
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -22,7 +22,17 @@ function minutesSinceMidnight(iso: string): number {
   return h * 60 + m;
 }
 
-export function CalendarGrid({ weekStart, events }: { weekStart: string; events: CalendarEvent[] }) {
+export function CalendarGrid({
+  weekStart,
+  events,
+  accounts,
+  errors,
+}: {
+  weekStart: string;
+  events: CalendarEvent[];
+  accounts: string[];
+  errors: CalendarError[];
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -45,23 +55,32 @@ export function CalendarGrid({ weekStart, events }: { weekStart: string; events:
     bucket.get(day)?.push(ev);
   }
 
-  const accountNames = [...new Set(events.map((ev) => ev.account))].sort();
   // Single source of truth for account -> color, shared by the legend and every event chip
-  // below, so they can never drift apart.
-  const accountColorIndex = buildAccountColorMap(accountNames);
+  // below, so they can never drift apart. Built from every configured account (not just ones
+  // with events this week), so a color also stays stable across weeks as data comes and goes.
+  const accountColorIndex = buildAccountColorMap(accounts);
+  const errorByAccount = new Map(errors.map((e) => [e.account, e.message]));
+  const accountNames = [...accounts].sort();
 
   return (
     <div className="flex flex-col gap-2">
       {accountNames.length > 0 && (
-        <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-          {accountNames.map((account) => (
-            <span key={account} className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-3 text-xs">
+          {accountNames.map((account) => {
+            const error = errorByAccount.get(account);
+            return (
               <span
-                className={`inline-block size-2.5 rounded-full ${SWATCH_PALETTE[accountColorIndex[account]]}`}
-              />
-              {account}
-            </span>
-          ))}
+                key={account}
+                className={`flex items-center gap-1.5 ${error ? ERROR_TEXT : "text-muted-foreground"}`}
+                title={error ? `${account}: ${error}` : account}
+              >
+                <span
+                  className={`inline-block size-2.5 rounded-full ${error ? ERROR_SWATCH : SWATCH_PALETTE[accountColorIndex[account]]}`}
+                />
+                {account}
+              </span>
+            );
+          })}
         </div>
       )}
 
