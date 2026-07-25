@@ -41,19 +41,31 @@ class CalendarAccount:
             self._service = build("calendar", "v3", credentials=self._creds, cache_discovery=False)
         return self._service
 
-    def list_events(self, time_min: datetime, time_max: datetime) -> list[dict]:
-        """Raw Calendar API event resources for the primary calendar in [time_min, time_max)."""
+    def list_events(self, time_min: datetime, time_max: datetime, tz_name: str) -> list[dict]:
+        """Raw Calendar API event resources for the primary calendar in [time_min, time_max).
+
+        `tz_name` (an IANA name, e.g. "Asia/Kolkata") is passed through as the API's
+        `timeZone` param so every account's `dateTime` values come back in a known
+        timezone rather than each calendar's own default — required for the frontend's
+        wall-clock-string timezone handling to be correct."""
         result = (
             self.service.events()
             .list(
                 calendarId="primary",
                 timeMin=time_min.isoformat(),
                 timeMax=time_max.isoformat(),
+                timeZone=tz_name,
                 singleEvents=True,
                 orderBy="startTime",
             )
             .execute()
         )
+        if result.get("nextPageToken"):
+            logger.warning(
+                "Calendar events truncated for account %r — more events exist "
+                "(nextPageToken present); pagination not implemented",
+                self.account,
+            )
         return result.get("items", [])
 
 

@@ -640,7 +640,9 @@ def create_app(api_token: str) -> FastAPI:
         time_max = datetime.combine(range_end + timedelta(days=1), datetime.min.time(), tzinfo=zone)
 
         accounts = load_calendar_accounts(settings)
-        events, errors = await asyncio.to_thread(list_events_for_range, accounts, time_min, time_max)
+        events, errors = await asyncio.to_thread(
+            list_events_for_range, accounts, time_min, time_max, settings.timezone
+        )
         return {
             "range_start": range_start.isoformat(),
             "range_end": range_end.isoformat(),

@@ -49,8 +49,13 @@ def _sort_key(event: dict) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def list_events_for_range(accounts: list, time_min: datetime, time_max: datetime) -> tuple[list[dict], list[dict]]:
+def list_events_for_range(
+    accounts: list, time_min: datetime, time_max: datetime, tz_name: str
+) -> tuple[list[dict], list[dict]]:
     """Fetch + normalize + merge + sort events across all accounts.
+
+    `tz_name` is passed through to each account's `list_events` so the Calendar API
+    responds in a known timezone (see `client.CalendarAccount.list_events`).
 
     Never raises: one account's failure — whether fetching or normalizing its events —
     is caught, logged, and reported in the returned errors list — the other accounts'
@@ -60,7 +65,7 @@ def list_events_for_range(accounts: list, time_min: datetime, time_max: datetime
     errors: list[dict] = []
     for acc in accounts:
         try:
-            raw_events = acc.list_events(time_min, time_max)
+            raw_events = acc.list_events(time_min, time_max, tz_name)
             events.extend(_normalize_event(e, acc.account) for e in raw_events)
         except Exception as exc:
             logger.exception("calendar fetch failed for account %r", acc.account)

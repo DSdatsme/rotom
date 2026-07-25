@@ -45,14 +45,66 @@ def test_list_events_passes_time_range_and_returns_items():
 
     time_min = datetime(2026, 7, 28, tzinfo=timezone.utc)
     time_max = datetime(2026, 8, 4, tzinfo=timezone.utc)
-    events = acc.list_events(time_min, time_max)
+    events = acc.list_events(time_min, time_max, "Asia/Kolkata")
 
     assert events == [{"id": "e1"}]
     assert captured["calendarId"] == "primary"
     assert captured["timeMin"] == time_min.isoformat()
     assert captured["timeMax"] == time_max.isoformat()
+    assert captured["timeZone"] == "Asia/Kolkata"
     assert captured["singleEvents"] is True
     assert captured["orderBy"] == "startTime"
+
+
+def test_list_events_warns_on_truncated_page(caplog):
+    """Google can return a partial page below maxResults, signaled only by a non-empty
+    nextPageToken. We don't paginate (YAGNI for a personal 7-day window), but a missing
+    meeting should at least be diagnosable via a warning log."""
+    from app.tools.calendar.client import CalendarAccount
+
+    class _TruncatedEventsList(_FakeEventsList):
+        def execute(self):
+            return {"items": self._items, "nextPageToken": "abc123"}
+
+    class _TruncatedEvents(_FakeEvents):
+        def list(self, **kwargs):
+            self._captured.update(kwargs)
+            return _TruncatedEventsList(self._items)
+
+    class _TruncatedService(_FakeService):
+        def events(self):
+            return _TruncatedEvents(self._items, self._captured)
+
+    acc = CalendarAccount("work", "cid", "sec", "tok")
+    captured: dict = {}
+    acc._service = _TruncatedService([{"id": "e1"}], captured)
+
+    with caplog.at_level("WARNING"):
+        events = acc.list_events(
+            datetime(2026, 7, 28, tzinfo=timezone.utc),
+            datetime(2026, 8, 4, tzinfo=timezone.utc),
+            "Asia/Kolkata",
+        )
+
+    assert events == [{"id": "e1"}]
+    assert any("nextPageToken" in r.message for r in caplog.records)
+
+
+def test_list_events_no_warning_when_page_complete(caplog):
+    from app.tools.calendar.client import CalendarAccount
+
+    acc = CalendarAccount("work", "cid", "sec", "tok")
+    captured: dict = {}
+    acc._service = _FakeService([{"id": "e1"}], captured)
+
+    with caplog.at_level("WARNING"):
+        acc.list_events(
+            datetime(2026, 7, 28, tzinfo=timezone.utc),
+            datetime(2026, 8, 4, tzinfo=timezone.utc),
+            "Asia/Kolkata",
+        )
+
+    assert not any("nextPageToken" in r.message for r in caplog.records)
 
 
 class TestLoadAccounts:

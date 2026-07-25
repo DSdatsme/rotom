@@ -9,7 +9,7 @@ class _FakeAccount:
         self._events = events or []
         self._error = error
 
-    def list_events(self, time_min, time_max):
+    def list_events(self, time_min, time_max, tz_name):
         if self._error:
             raise self._error
         return self._events
@@ -72,7 +72,7 @@ class TestListEventsForRange:
             _FakeAccount("personal", events=[_timed_event(event_id="p1", start="2026-07-28T09:00:00+05:30",
                                                             end="2026-07-28T09:30:00+05:30")]),
         ]
-        events, errors = list_events_for_range(accounts, None, None)
+        events, errors = list_events_for_range(accounts, None, None, "Asia/Kolkata")
         assert errors == []
         assert [e["event_id"] for e in events] == ["p1", "w1"]  # sorted by start, not account order
         assert [e["account"] for e in events] == ["personal", "work"]
@@ -84,14 +84,14 @@ class TestListEventsForRange:
             _FakeAccount("broken", error=RuntimeError("token expired")),
             _FakeAccount("ok", events=[_timed_event(event_id="ok1")]),
         ]
-        events, errors = list_events_for_range(accounts, None, None)
+        events, errors = list_events_for_range(accounts, None, None, "Asia/Kolkata")
         assert [e["event_id"] for e in events] == ["ok1"]
         assert errors == [{"account": "broken", "message": "token expired"}]
 
     def test_empty_accounts_returns_empty(self):
         from app.tools.calendar.service import list_events_for_range
 
-        assert list_events_for_range([], None, None) == ([], [])
+        assert list_events_for_range([], None, None, "Asia/Kolkata") == ([], [])
 
     def test_sorts_by_absolute_instant_not_raw_string(self):
         from app.tools.calendar.service import list_events_for_range
@@ -104,7 +104,7 @@ class TestListEventsForRange:
             _FakeAccount("b", events=[_timed_event(event_id="b1", start="2026-07-28T09:00:00+05:30",
                                                     end="2026-07-28T09:30:00+05:30")]),
         ]
-        events, errors = list_events_for_range(accounts, None, None)
+        events, errors = list_events_for_range(accounts, None, None, "Asia/Kolkata")
         assert errors == []
         assert [e["event_id"] for e in events] == ["b1", "a1"]
 
@@ -115,7 +115,7 @@ class TestListEventsForRange:
             _FakeAccount("broken", events=[{"id": "bad", "start": None, "end": None}]),
             _FakeAccount("ok", events=[_timed_event(event_id="ok1")]),
         ]
-        events, errors = list_events_for_range(accounts, None, None)
+        events, errors = list_events_for_range(accounts, None, None, "Asia/Kolkata")
         assert [e["event_id"] for e in events] == ["ok1"]
         assert len(errors) == 1
         assert errors[0]["account"] == "broken"
@@ -138,6 +138,6 @@ class TestListEventsForRange:
             _FakeAccount("personal", events=[_timed_event(event_id="p1", start="2026-07-28T09:00:00+05:30",
                                                             end="2026-07-28T09:30:00+05:30")]),
         ]
-        events, errors = list_events_for_range(accounts, None, None)
+        events, errors = list_events_for_range(accounts, None, None, "Asia/Kolkata")
         assert errors == []
         assert [e["event_id"] for e in events] == ["p1", "w1", "bad-start"]

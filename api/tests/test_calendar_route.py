@@ -15,7 +15,7 @@ class _FakeAccount:
         self._events = events or []
         self._error = error
 
-    def list_events(self, time_min, time_max):
+    def list_events(self, time_min, time_max, tz_name):
         if self._error:
             raise self._error
         return self._events
@@ -93,3 +93,33 @@ def test_arbitrary_start_snaps_to_containing_week(client, monkeypatch):
 def test_bad_date_is_422(client):
     resp = client.get("/api/calendar/events?start=not-a-date&end=2026-07-28", headers=AUTH)
     assert resp.status_code == 422
+
+
+def test_timezone_boundary_conversion_for_non_utc_settings_timezone(client, monkeypatch):
+    """A given start/end day range must convert to the correct UTC-offset time_min/time_max
+    for the configured (non-UTC) settings.timezone — default is Asia/Kolkata, +05:30."""
+    from app.config import get_settings
+
+    assert get_settings().timezone == "Asia/Kolkata"
+
+    captured: dict = {}
+
+    class _CapturingAccount:
+        account = "personal"
+
+        def list_events(self, time_min, time_max, tz_name):
+            captured["time_min"] = time_min
+            captured["time_max"] = time_max
+            captured["tz_name"] = tz_name
+            return []
+
+    monkeypatch.setattr(
+        "app.tools.calendar.client.load_accounts", lambda settings: [_CapturingAccount()]
+    )
+    resp = client.get("/api/calendar/events?start=2026-07-27&end=2026-08-02", headers=AUTH)
+    assert resp.status_code == 200
+
+    assert captured["tz_name"] == "Asia/Kolkata"
+    assert captured["time_min"].isoformat() == "2026-07-27T00:00:00+05:30"
+    # end is inclusive, so time_max is midnight of the day AFTER end
+    assert captured["time_max"].isoformat() == "2026-08-03T00:00:00+05:30"
