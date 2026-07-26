@@ -43,8 +43,7 @@ api/app/tools/retro/service.py        # NEW — 4 stat-gathering + formatting fu
 api/app/workflows/daily_calendar_brief.py   # NEW
 api/app/workflows/weekly_retro.py           # NEW
 api/app/workflows/registry.py               # MODIFY — register both
-api/app/workflows/morning_digest.py         # MODIFY — wrap in record_run (see §5)
-api/app/workflows/code_issue.py             # MODIFY — wrap in record_run (see §5)
+api/app/workflows/morning_digest.py         # MODIFY — wrap in record_run (see §4.2)
 ```
 
 Both new workflows follow the existing `morning_digest.py` shape exactly: a
@@ -105,29 +104,38 @@ already exists (no re-computation, no new tables):
 - `reminder_stats(since: datetime) -> dict` — `Reminder` table (main DB):
   - `fired`: count where `fired_at >= since`.
   - `pending`: current count where `status == pending` (live snapshot, not time-boxed).
-- `workflow_run_stats(since: datetime) -> dict[str, dict]` — `RunLog` table
-  (**observability DB**, separate session from the other three), `source == "inngest"` and
-  `started_at >= since`, grouped by `kind`, each entry `{count, success, failure, degraded}`.
+- `workflow_run_stats(since: datetime) -> dict[str, dict]` — merges **two** sources, since
+  not every workflow tracks itself the same way:
+  - `RunLog` (**observability DB**, separate session from the other three), `source ==
+    "inngest"` and `started_at >= since`, grouped by `kind`, each entry `{count, success,
+    failure, degraded}` — covers `morning_digest`, `daily_calendar_brief`, `weekly_retro`.
+  - `CodingRun` (**main DB**), `created_at >= since`, grouped by `status` — covers
+    `code_issue`, which deliberately has **no** workflow-level `record_run` (see §4.2) and
+    already tracks its own lifecycle in this dedicated table.
+  Both are folded into one `{kind: {count, ...}}` dict so `format_weekly_retro` renders a
+  single "workflow runs" section without needing to know which source each entry came from.
 
 `format_weekly_retro(stats: dict) -> str` assembles the four sections into one message,
 each a short labeled block (counts, not prose).
 
 ### 4.2 Instrumentation gap this depends on
-`workflow_run_stats` only works if every top-level workflow actually writes a `RunLog` row.
-Today, `code_issue.py` calls `record_run` **around individual internal steps** ("coder",
-"code_review") but never around the workflow as a whole, and `morning_digest.py` doesn't
-call `record_run` at all. Fix: give each of the four top-level workflows — `code_issue`,
-`morning_digest`, `daily_calendar_brief`, `weekly_retro` — one `record_run(kind="<workflow-
-name>", source="inngest")` around its own substantive step, the same scoping already used
-for the two new workflows (§3.3, §4.3) — never around the `notify()` step, and never
-spanning multiple `ctx.step.run` calls at once (keeps each recorded run inside a single
-Inngest step's boundary, matching the one existing precedent). For `code_issue.py`
-specifically, this means one *new*, additional `record_run("code_issue", ...)` around
-whichever step is judged its main unit of work (nesting already supports this — existing
-inner "coder"/"code_review" runs become children via `parent_run_id` automatically); for
-`morning_digest.py`, wrap its existing "summarize" (or fetch) step, whichever is judged the
-substantive one. No behavior change to any workflow's actual work, only to what gets
-recorded.
+`workflow_run_stats` needs every workflow it reports on to be trackable somehow — but not
+all of them the same way, and that's fine (see §4.1's two-source merge above):
+
+- `code_issue.py`'s own docstring is explicit: "the top-level lifecycle lives in the
+  `CodingRun` table ... no workflow-wrapping `record_run`" — a deliberate existing decision,
+  not a gap. **Leave `code_issue.py` untouched.** Its counts come from `CodingRun` directly.
+- `morning_digest.py` calls `record_run` **not at all** today — this genuinely is a gap (it
+  has no dedicated tracking table the way `code_issue` does). Fix: wrap its existing
+  "summarize" step in `record_run("morning_digest", source="inngest")`.
+- The two new workflows (§3.3, §4.3) each get their own `record_run` around their
+  substantive step from the start, as already specced — never around `notify()`, and never
+  spanning multiple `ctx.step.run` calls (keeps each recorded run inside a single Inngest
+  step's boundary, matching the one existing precedent in `code_issue.py`'s inner
+  "coder"/"code_review" runs).
+
+Net effect: only `morning_digest.py` changes among the *existing* workflows;
+`code_issue.py` is not touched.
 
 ### 4.3 Workflow (`weekly_retro.py`)
 `TriggerCron("0 18 * * 0")` (Sunday 6pm) + `TriggerEvent("workflows/weekly-retro.requested")`.
@@ -159,7 +167,7 @@ queries work or the run fails outright, no degraded state needed).
 ### Workflows
 Same minimal pattern as `test_code_issue_workflow_import.py` — for each new workflow:
 `test_<name>_imports_without_inngest_server_or_token` and `test_<name>_registered`. The
-`record_run` wrapping added to `code_issue.py`/`morning_digest.py` is exercised indirectly
+`record_run` wrapping added to `morning_digest.py` is exercised indirectly
 by their existing import/registration tests (no behavior to newly unit-test there beyond
 "still imports cleanly").
 
@@ -179,9 +187,7 @@ by their existing import/registration tests (no behavior to newly unit-test ther
 **Modify**
 - `api/app/tools/calendar/service.py` — add `format_daily_brief`.
 - `api/app/workflows/registry.py` — register both new workflows.
-- `api/app/workflows/morning_digest.py` — wrap in an outer `record_run`.
-- `api/app/workflows/code_issue.py` — wrap in an outer `record_run` (additive to existing
-  inner ones).
+- `api/app/workflows/morning_digest.py` — wrap its "summarize" step in `record_run`.
 - `TODO.md` — mark this sub-project done; keep meeting-prep and conflict-aware-drafting as
   the remaining "cross-source synthesis" backlog items.
 
