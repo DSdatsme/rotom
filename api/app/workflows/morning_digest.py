@@ -23,11 +23,16 @@ async def morning_digest(ctx: inngest.Context) -> str:
         return "nothing fetched"
 
     async def summarize() -> str:
-        return await llm(
-            "chat",
-            "Summarize these Hacker News stories in <=8 short bullet lines for a "
-            f"busy engineer. Keep URLs for the 3 most interesting.\n\n{stories}",
-        )
+        from app.observability.sink import record_run
+
+        with record_run("morning_digest", source="inngest") as run:
+            text = await llm(
+                "chat",
+                "Summarize these Hacker News stories in <=8 short bullet lines for a "
+                f"busy engineer. Keep URLs for the 3 most interesting.\n\n{stories}",
+            )
+            run.summary = "summarized"
+            return text
 
     summary = await ctx.step.run("summarize", summarize)
 
