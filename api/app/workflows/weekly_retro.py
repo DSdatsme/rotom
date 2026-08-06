@@ -2,15 +2,18 @@
 
 import inngest
 
+from app.config import get_settings
 from app.workflows.client import inngest_client
 from app.workflows.lib import notify
+
+_settings = get_settings()
 
 
 @inngest_client.create_function(
     fn_id="weekly-retro",
     trigger=[
         inngest.TriggerEvent(event="workflows/weekly-retro.requested"),
-        inngest.TriggerCron(cron="0 18 * * 0"),
+        inngest.TriggerCron(cron=f"TZ={_settings.timezone} 0 18 * * 0"),
     ],
     retries=2,
 )

@@ -95,6 +95,19 @@ class TestReminderStats:
         stats = reminder_stats(WEEK_AGO)
         assert stats["pending"] == 1
 
+    def test_recurring_reminder_counts_as_fired_despite_staying_pending(self, session_db):
+        """Recurring reminders (recurrence_cron set) never flip to FIRED — the
+        fire-reminder job only sets status=FIRED for one-time reminders — so "fired"
+        must be counted by fired_at alone, with no status predicate."""
+        from app.tools.retro.service import reminder_stats
+
+        with get_session() as s:
+            s.add(Reminder(text="a", fire_at=NOW, recurrence_cron="0 9 * * *",
+                            status=ReminderStatus.PENDING, fired_at=NOW - timedelta(days=1)))
+
+        stats = reminder_stats(WEEK_AGO)
+        assert stats["fired"] == 1
+
 
 class TestWorkflowRunStats:
     def test_merges_runlog_and_codingrun_sources(self, session_db, obs_db):
@@ -128,6 +141,40 @@ class TestWorkflowRunStats:
         from app.tools.retro.service import workflow_run_stats
 
         assert workflow_run_stats(WEEK_AGO) == {}
+
+    def test_excludes_code_issue_internal_sub_runs(self, session_db, obs_db):
+        """code_issue's internal "coder"/"code_review" steps record their own RunLog
+        rows via record_run, but they aren't top-level workflows — they're code_issue's
+        implementation detail, already counted separately via CodingRun. They must not
+        leak through as their own bogus top-level entries."""
+        from app.store.observability import RunLog, RunStatus, get_obs_session
+        from app.tools.retro.service import workflow_run_stats
+
+        with get_obs_session() as s:
+            s.add(RunLog(kind="coder", source="inngest", status=RunStatus.SUCCESS,
+                          started_at=NOW - timedelta(days=1)))
+            s.add(RunLog(kind="code_review", source="inngest", status=RunStatus.SUCCESS,
+                          started_at=NOW - timedelta(days=1)))
+            s.commit()
+
+        stats = workflow_run_stats(WEEK_AGO)
+        assert "coder" not in stats
+        assert "code_review" not in stats
+
+    def test_excludes_own_in_flight_run_from_degraded(self, session_db, obs_db):
+        """A workflow's own still-RUNNING RunLog row (e.g. weekly_retro calling this
+        function from inside its own record_run block) must never count itself as
+        "degraded" — RUNNING rows should be excluded entirely, not bucketed at all."""
+        from app.store.observability import RunLog, RunStatus, get_obs_session
+        from app.tools.retro.service import workflow_run_stats
+
+        with get_obs_session() as s:
+            s.add(RunLog(kind="weekly_retro", source="inngest", status=RunStatus.RUNNING,
+                          started_at=NOW - timedelta(days=1)))
+            s.commit()
+
+        stats = workflow_run_stats(WEEK_AGO)
+        assert "weekly_retro" not in stats
 
 
 class TestFormatWeeklyRetro:

@@ -2,15 +2,18 @@
 
 import inngest
 
+from app.config import get_settings
 from app.workflows.client import inngest_client
 from app.workflows.lib import notify
+
+_settings = get_settings()
 
 
 @inngest_client.create_function(
     fn_id="daily-calendar-brief",
     trigger=[
         inngest.TriggerEvent(event="workflows/daily-calendar-brief.requested"),
-        inngest.TriggerCron(cron="30 8 * * *"),
+        inngest.TriggerCron(cron=f"TZ={_settings.timezone} 30 8 * * *"),
     ],
     retries=2,
 )

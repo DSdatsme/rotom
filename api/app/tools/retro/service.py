@@ -37,20 +37,40 @@ def draft_activity(since: datetime) -> dict:
 
 def reminder_stats(since: datetime) -> dict:
     """Reminders fired since `since` vs. current pending count (a live snapshot, not
-    time-boxed — pending reminders aren't "new" or "old", they're just outstanding)."""
+    time-boxed — pending reminders aren't "new" or "old", they're just outstanding).
+
+    "Fired" is counted by `fired_at >= since` alone, with no status predicate — matching
+    the spec exactly. A recurring reminder (`recurrence_cron` set) never flips to FIRED;
+    it stays PENDING forever and only has `fired_at` bumped on each fire (see
+    `scheduler/jobs.py`'s fire-reminder job), so filtering on status would silently drop
+    every recurring reminder from this count. This still undercounts a recurring reminder
+    that fires more than once within the window, since `fired_at` is a single column
+    overwritten on each fire rather than an audit log — a known, accepted limitation of
+    the spec's chosen design, not something to fix here."""
     with get_session() as s:
-        fired = s.query(Reminder).filter(
-            Reminder.status == ReminderStatus.FIRED, Reminder.fired_at >= since
-        ).count()
+        fired = s.query(Reminder).filter(Reminder.fired_at >= since).count()
         pending = s.query(Reminder).filter(Reminder.status == ReminderStatus.PENDING).count()
     return {"fired": fired, "pending": pending}
+
+
+# Real top-level workflow kinds: Inngest functions that call `record_run` on themselves.
+# An allowlist, not a denylist, so any future workflow that adds internal `record_run`
+# sub-steps (like code_issue's "coder"/"code_review") doesn't leak through as a bogus
+# top-level entry — see workflow_run_stats.
+_TOP_LEVEL_WORKFLOW_KINDS = {"morning_digest", "daily_calendar_brief", "weekly_retro"}
 
 
 def workflow_run_stats(since: datetime) -> dict[str, dict]:
     """Merge two sources of workflow-run tracking: RunLog (observability DB) for
     workflows with no dedicated table, and CodingRun (main DB) for code_issue, which
     deliberately tracks its own lifecycle there instead — see workflows/code_issue.py's
-    module docstring. Never raises; an empty result just means nothing ran this window."""
+    module docstring. Never raises; an empty result just means nothing ran this window.
+
+    The RunLog query is restricted to `_TOP_LEVEL_WORKFLOW_KINDS` (excludes code_issue's
+    internal "coder"/"code_review" sub-runs, which would otherwise double-count code_issue
+    and show up as bogus top-level entries) and excludes RunStatus.RUNNING rows (a
+    workflow's own still-in-flight RunLog row — e.g. weekly_retro calls this function from
+    inside its own `record_run` block — must not count itself as "degraded")."""
     from app.store.observability import RunLog, RunStatus, get_obs_session
 
     stats: dict[str, dict] = {}
@@ -67,7 +87,10 @@ def workflow_run_stats(since: datetime) -> dict[str, dict]:
 
     with get_obs_session() as s:
         rows = s.query(RunLog.kind, RunLog.status).filter(
-            RunLog.source == "inngest", RunLog.started_at >= since
+            RunLog.source == "inngest",
+            RunLog.started_at >= since,
+            RunLog.kind.in_(_TOP_LEVEL_WORKFLOW_KINDS),
+            RunLog.status != RunStatus.RUNNING,
         ).all()
     for kind, status in rows:
         _bump(kind, status == RunStatus.SUCCESS, status == RunStatus.FAILURE)
