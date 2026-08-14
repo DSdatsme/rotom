@@ -4,20 +4,14 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowUpRight, Activity } from "lucide-react";
 import type { RunDetail, RunStatus } from "@/lib/api";
-import type { Tone } from "@/lib/view/email";
 import { formatTokens, computeDuration, parseJsonlLogs, formatDateTime } from "@/lib/obs-utils";
 import { RUN_STATUS } from "@/lib/view/run";
-import { toneDot } from "@/lib/tone";
+import { toneDot, toneCls } from "@/lib/tone";
 import { Icon } from "@/components/ui/icon";
 import { Panel } from "@/components/ui/panel";
 import { LogsPanel } from "@/components/logs-panel";
 
 const POLL_INTERVAL = 4000; // ms
-
-/** Mock CSS tone tokens: our "brand" maps to the mock's "accent". */
-function toneCls(tone: Tone): string {
-  return tone === "brand" ? "accent" : tone;
-}
 
 export function RunDetailLive({ initialRun, runId }: { initialRun: RunDetail; runId: string }) {
   const [run, setRun] = useState<RunDetail>(initialRun);

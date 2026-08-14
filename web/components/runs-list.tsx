@@ -4,20 +4,15 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import type { RunLog } from "@/lib/api";
-import type { Tone } from "@/lib/view/email";
 import { RUN_STATUS } from "@/lib/view/run";
 import { relativeTime, formatDuration } from "@/lib/format/datetime";
+import { toneCls } from "@/lib/tone";
 import { Icon } from "@/components/ui/icon";
 import { Panel } from "@/components/ui/panel";
 import { EmptyState } from "@/components/ui/empty-state";
 import { TriggerRunButton } from "@/components/trigger-run-button";
 
 const POLL_INTERVAL = 4000; // ms
-
-/** Mock CSS tone tokens: our "brand" maps to the mock's "accent". */
-function toneCls(tone: Tone): string {
-  return tone === "brand" ? "accent" : tone;
-}
 
 export function RunsList({ initialRuns }: { initialRuns: RunLog[] }) {
   const [runs, setRuns] = useState<RunLog[]>(initialRuns);

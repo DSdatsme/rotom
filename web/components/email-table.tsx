@@ -4,15 +4,11 @@ import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Check, Minus, CircleCheck, CircleSlash, CircleDot, X, Loader } from "lucide-react";
 
-import type { EmailView, Tone } from "@/lib/view/email";
+import type { EmailView } from "@/lib/view/email";
 import { setEmailsStatus } from "@/lib/actions";
+import { toneCls } from "@/lib/tone";
 import { Icon } from "@/components/ui/icon";
 import { UrgencyScale } from "@/components/ui/urgency-scale";
-
-/** Mock CSS tone tokens: our "brand" maps to the mock's "accent". */
-function toneCls(tone: Tone): string {
-  return tone === "brand" ? "accent" : tone;
-}
 
 export function EmailTable({ emails }: { emails: EmailView[] }) {
   const [selected, setSelected] = useState<Set<number>>(new Set());
