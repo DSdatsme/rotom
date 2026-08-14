@@ -106,6 +106,28 @@ def _resolve_footer_url(settings, rotom_footer: bool | None) -> str:
     return settings.email_footer_url if (use_footer and settings.email_footer_url) else ""
 
 
+def _resolve_send_args(draft: Draft, email: Email | None, opts: "FooterOption") -> dict:
+    """Build the shared kwargs for `create_gmail_draft`/`send_message`: recipient,
+    subject, and threading fields fall back from the draft to its source email."""
+    from app.config import get_settings, resolve_attachments
+
+    settings = get_settings()
+    try:
+        attachments = resolve_attachments(_draft_attachment_keys(draft), settings.attachment_list)
+    except (FileNotFoundError, KeyError) as e:
+        raise HTTPException(422, str(e))
+    return dict(
+        to=draft.to_addr or (email.sender if email else ""),
+        subject=draft.subject or (email.subject if email else ""),
+        body=draft.body,
+        attachments=attachments,
+        thread_id=email.thread_id if email else None,
+        in_reply_to=email.rfc_message_id if email else "",
+        references=email.references if email else "",
+        footer_url=_resolve_footer_url(settings, opts.rotom_footer),
+    )
+
+
 class FooterOption(BaseModel):
     rotom_footer: bool | None = None
 
@@ -423,7 +445,6 @@ def create_app(api_token: str) -> FastAPI:
 
     @app.post("/api/drafts/{draft_id}/save-to-gmail", dependencies=[Depends(require_auth)])
     def save_to_gmail(draft_id: int, opts: FooterOption = FooterOption()) -> dict:  # sync: blocking Gmail I/O
-        from app.config import get_settings, resolve_attachments
         from googleapiclient.errors import HttpError
 
         with get_session() as s:
@@ -431,34 +452,12 @@ def create_app(api_token: str) -> FastAPI:
             if draft.status != DraftStatus.PENDING:
                 raise HTTPException(409, f"Draft is {draft.status}")
 
-            try:
-                paths = resolve_attachments(_draft_attachment_keys(draft), get_settings().attachment_list)
-            except (FileNotFoundError, KeyError) as e:
-                raise HTTPException(422, str(e))
-
+            send_args = _resolve_send_args(draft, email, opts)
             account_name = draft.account or (email.account if email else "")
             account = get_gmail_account(account_name)
 
-            to_addr = draft.to_addr or (email.sender if email else "")
-            subject = draft.subject or (email.subject if email else "")
-            thread_id = email.thread_id if email else None
-            in_reply_to = email.rfc_message_id if email else ""
-            references = email.references if email else ""
-
-            footer_url = _resolve_footer_url(get_settings(), opts.rotom_footer)
-
             try:
-                res = account.create_gmail_draft(
-                    to=to_addr,
-                    subject=subject,
-                    body=draft.body,
-                    attachments=paths,
-                    thread_id=thread_id,
-                    in_reply_to=in_reply_to,
-                    references=references,
-                    gmail_draft_id=draft.gmail_draft_id,
-                    footer_url=footer_url,
-                )
+                res = account.create_gmail_draft(**send_args, gmail_draft_id=draft.gmail_draft_id)
             except HttpError as e:
                 if e.resp.status == 403:
                     raise HTTPException(409, "re-run auth_setup to grant gmail.compose")
@@ -470,7 +469,6 @@ def create_app(api_token: str) -> FastAPI:
 
     @app.post("/api/drafts/{draft_id}/send", dependencies=[Depends(require_auth)])
     def send_draft(draft_id: int, opts: FooterOption = FooterOption()) -> dict:  # sync: blocking Gmail I/O
-        from app.config import get_settings, resolve_attachments
         from app.store.db import DraftKind
 
         # Phase 1: validate + claim the draft (PENDING -> SENDING) and gather all send
@@ -482,26 +480,11 @@ def create_app(api_token: str) -> FastAPI:
             if draft.status != DraftStatus.PENDING:
                 raise HTTPException(409, f"Draft is {draft.status}, cannot send")
 
-            to_addr = draft.to_addr or (email.sender if email else "")
-            if draft.kind == DraftKind.OUTREACH and not to_addr:
+            send_args = _resolve_send_args(draft, email, opts)
+            if draft.kind == DraftKind.OUTREACH and not send_args["to"]:
                 raise HTTPException(422, "Missing to_addr for outreach")
 
-            try:
-                paths = resolve_attachments(_draft_attachment_keys(draft), get_settings().attachment_list)
-            except (FileNotFoundError, KeyError) as e:
-                raise HTTPException(422, str(e))
-
             account_name = draft.account or (email.account if email else "")
-            send_args = dict(
-                to=to_addr,
-                subject=draft.subject or (email.subject if email else ""),
-                body=draft.body,
-                attachments=paths,
-                thread_id=email.thread_id if email else None,
-                in_reply_to=email.rfc_message_id if email else "",
-                references=email.references if email else "",
-                footer_url=_resolve_footer_url(get_settings(), opts.rotom_footer),
-            )
             gmail_draft_id = draft.gmail_draft_id
             draft.status = DraftStatus.SENDING  # committed on block exit
 
