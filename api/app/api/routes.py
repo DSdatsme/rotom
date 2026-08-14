@@ -26,6 +26,20 @@ def get_gmail_account(account_name: str):
 
 # --- serializers ---
 
+def _draft_attachment_keys(d: Draft) -> list[str]:
+    import json
+    try:
+        return json.loads(d.attachments)
+    except Exception:
+        return []
+
+
+def _email_compose_dict(e: Email | None) -> dict | None:
+    if e is None:
+        return None
+    return {"sender": e.sender, "subject": e.subject, "body": e.body or e.snippet, "snippet": e.snippet}
+
+
 def _email_json(e: Email, include_body: bool = False) -> dict:
     data = {
         "id": e.id,
@@ -48,12 +62,8 @@ def _email_json(e: Email, include_body: bool = False) -> dict:
 
 def _draft_json(d: Draft, e: Email | None, include_body: bool = False) -> dict:
     from app.config import get_settings
-    import json
-    try:
-        keys = json.loads(d.attachments)
-    except Exception:
-        keys = []
-    
+    keys = _draft_attachment_keys(d)
+
     settings = get_settings()
     att_meta = {m.key: m for m in settings.attachment_list}
     parsed_attachments = []
@@ -243,7 +253,7 @@ def create_app(api_token: str) -> FastAPI:
     def regenerate_draft(email_id: int) -> dict:
         """(Re)generate the reply draft for an email. Replaces the pending draft if one exists."""
         from app.llm.provider import get_chat_model
-        from app.tools.drafts.composer import ComposerContext, compose
+        from app.tools.drafts.composer import ComposerContext, Identity, compose
         from app.config import get_settings
         from app.store.db import DraftKind, DraftMessage
 
@@ -251,8 +261,7 @@ def create_app(api_token: str) -> FastAPI:
             e = s.get(Email, email_id)
             if e is None:
                 raise HTTPException(404, f"Email {email_id} not found")
-            email_dict = {"sender": e.sender, "subject": e.subject,
-                          "body": e.body or e.snippet, "snippet": e.snippet}
+            email_dict = _email_compose_dict(e)
 
             pending = (
                 s.query(Draft)
@@ -273,7 +282,7 @@ def create_app(api_token: str) -> FastAPI:
                 kind=DraftKind.REPLY,
                 new_message="Generate draft",
                 source_email=email_dict,
-                identity=type("Identity", (), {"name": settings.user_name, "signature": settings.user_signature})(),
+                identity=Identity(name=settings.user_name, signature=settings.user_signature),
                 soul=_read_soul(settings.soul_file),
             )
             
@@ -332,10 +341,9 @@ def create_app(api_token: str) -> FastAPI:
     @app.post("/api/drafts/{draft_id}/messages", dependencies=[Depends(require_auth)])
     def post_draft_message(draft_id: int, payload: MessageCreate) -> dict:  # sync: blocking LLM I/O
         from app.llm.provider import get_chat_model
-        from app.tools.drafts.composer import ComposerContext, compose
+        from app.tools.drafts.composer import ComposerContext, Identity, compose
         from app.config import get_settings
         from app.store.db import DraftMessage, DraftKind
-        import json
 
         with get_session() as s:
             draft, email = _get_draft_or_404(s, draft_id)
@@ -348,23 +356,15 @@ def create_app(api_token: str) -> FastAPI:
 
             settings = get_settings()
             history = [(m.role, m.content) for m in draft.messages[:-1]]
-            email_dict = None
-            if email:
-                email_dict = {"sender": email.sender, "subject": email.subject, "body": email.body or email.snippet, "snippet": email.snippet}
-            
-            try:
-                sel_keys = json.loads(draft.attachments)
-            except Exception:
-                sel_keys = []
-            
-            att_metas = [m for m in settings.attachment_list if m.key in set(sel_keys)]
+            sel_keys = set(_draft_attachment_keys(draft))
+            att_metas = [m for m in settings.attachment_list if m.key in sel_keys]
 
             ctx = ComposerContext(
                 kind=draft.kind,
                 new_message=msg_content,
-                source_email=email_dict,
+                source_email=_email_compose_dict(email),
                 history=history,
-                identity=type("Identity", (), {"name": settings.user_name, "signature": settings.user_signature})(),
+                identity=Identity(name=settings.user_name, signature=settings.user_signature),
                 attachments=att_metas,
                 soul=_read_soul(settings.soul_file),
             )
@@ -424,21 +424,15 @@ def create_app(api_token: str) -> FastAPI:
     @app.post("/api/drafts/{draft_id}/save-to-gmail", dependencies=[Depends(require_auth)])
     def save_to_gmail(draft_id: int, opts: FooterOption = FooterOption()) -> dict:  # sync: blocking Gmail I/O
         from app.config import get_settings, resolve_attachments
-        import json
         from googleapiclient.errors import HttpError
-        
+
         with get_session() as s:
             draft, email = _get_draft_or_404(s, draft_id)
             if draft.status != DraftStatus.PENDING:
                 raise HTTPException(409, f"Draft is {draft.status}")
-            
+
             try:
-                sel_keys = json.loads(draft.attachments)
-            except Exception:
-                sel_keys = []
-                
-            try:
-                paths = resolve_attachments(sel_keys, get_settings().attachment_list)
+                paths = resolve_attachments(_draft_attachment_keys(draft), get_settings().attachment_list)
             except (FileNotFoundError, KeyError) as e:
                 raise HTTPException(422, str(e))
 
@@ -477,7 +471,6 @@ def create_app(api_token: str) -> FastAPI:
     @app.post("/api/drafts/{draft_id}/send", dependencies=[Depends(require_auth)])
     def send_draft(draft_id: int, opts: FooterOption = FooterOption()) -> dict:  # sync: blocking Gmail I/O
         from app.config import get_settings, resolve_attachments
-        import json
         from app.store.db import DraftKind
 
         # Phase 1: validate + claim the draft (PENDING -> SENDING) and gather all send
@@ -494,11 +487,7 @@ def create_app(api_token: str) -> FastAPI:
                 raise HTTPException(422, "Missing to_addr for outreach")
 
             try:
-                sel_keys = json.loads(draft.attachments)
-            except Exception:
-                sel_keys = []
-            try:
-                paths = resolve_attachments(sel_keys, get_settings().attachment_list)
+                paths = resolve_attachments(_draft_attachment_keys(draft), get_settings().attachment_list)
             except (FileNotFoundError, KeyError) as e:
                 raise HTTPException(422, str(e))
 
