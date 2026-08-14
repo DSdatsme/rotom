@@ -324,14 +324,18 @@ def create_app(api_token: str) -> FastAPI:
             except Exception as exc:
                 raise HTTPException(500, f"Error generating draft: {exc}")
 
-    def _read_soul(path: str) -> str:
-        if not path: return ""
+    def _read_file_safe(path: str) -> str | None:
         import os
-        if os.path.isfile(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f: return f.read().strip()
-            except Exception: pass
-        return ""
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            return None
+
+    def _read_soul(path: str) -> str:
+        return (_read_file_safe(path) or "").strip()
 
     def _get_draft_or_404(s, draft_id: int) -> tuple[Draft, Email | None]:
         draft = s.get(Draft, draft_id)
@@ -629,15 +633,7 @@ def create_app(api_token: str) -> FastAPI:
     @app.get("/api/soul", dependencies=[Depends(require_auth)])
     async def get_soul() -> dict:
         from app.config import get_settings
-        import os
-        path = get_settings().soul_file
-        if not path or not os.path.isfile(path):
-            return {"content": ""}
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return {"content": f.read()}
-        except Exception:
-            return {"content": ""}
+        return {"content": _read_file_safe(get_settings().soul_file) or ""}
 
     @app.put("/api/soul", dependencies=[Depends(require_auth)])
     async def update_soul(payload: SoulUpdate) -> dict:

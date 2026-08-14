@@ -4,6 +4,29 @@ import threading
 from datetime import datetime, timezone
 from app.observability.sink import current_run_id, current_run_kind
 
+_STD_LOG_ATTRS = frozenset({
+    "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
+    "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
+    "created", "msecs", "relativeCreated", "thread", "threadName", "processName",
+    "process", "taskName", "run_id", "message",
+})
+
+def _extra_fields(record: logging.LogRecord, *, extra_std_attrs: frozenset = frozenset(),
+                   skip_private: bool = False) -> dict:
+    """Non-standard LogRecord attributes, made JSON-safe (str() fallback for
+    values json.dumps can't serialize)."""
+    std_attrs = _STD_LOG_ATTRS | extra_std_attrs
+    fields = {}
+    for k, v in record.__dict__.items():
+        if k in std_attrs or (skip_private and k.startswith("_")):
+            continue
+        try:
+            json.dumps(v)
+            fields[k] = v
+        except TypeError:
+            fields[k] = str(v)
+    return fields
+
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         ts = datetime.fromtimestamp(record.created, timezone.utc).isoformat()
@@ -21,19 +44,7 @@ class JsonFormatter(logging.Formatter):
         if record.exc_info:
             log_obj["exc_info"] = self.formatException(record.exc_info)
 
-        std_attrs = {
-            "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
-            "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
-            "created", "msecs", "relativeCreated", "thread", "threadName", "processName",
-            "process", "taskName", "run_id", "message"
-        }
-        for k, v in record.__dict__.items():
-            if k not in std_attrs:
-                try:
-                    json.dumps(v)
-                    log_obj[k] = v
-                except TypeError:
-                    log_obj[k] = str(v)
+        log_obj.update(_extra_fields(record))
 
         return json.dumps(log_obj)
 
@@ -169,16 +180,7 @@ class DbLogHandler(logging.Handler):
 
     def _persist(self, records: list) -> None:
         """Write a batch of records to the DB."""
-        import json as _json
-        from datetime import datetime, timezone
         from app.store.observability import get_obs_session, LogEntry
-
-        std_attrs = {
-            "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
-            "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
-            "created", "msecs", "relativeCreated", "thread", "threadName", "processName",
-            "process", "taskName", "run_id", "message", "kind",
-        }
 
         entries = []
         for record in records:
@@ -198,18 +200,10 @@ class DbLogHandler(logging.Handler):
                     except (TypeError, ValueError):
                         pass
 
-                # Capture any extra structured fields
-                extra: dict = {}
-                for k, v in record.__dict__.items():
-                    if k not in std_attrs and not k.startswith("_"):
-                        try:
-                            _json.dumps(v)
-                            extra[k] = v
-                        except TypeError:
-                            extra[k] = str(v)
+                # Capture any extra structured fields. "kind" is excluded here
+                # (it's handled separately below) — only meaningful inside a run.
+                extra = _extra_fields(record, extra_std_attrs=frozenset({"kind"}), skip_private=True)
 
-                # Run kind, stamped on the record by RunContextFilter (excluded
-                # from `extra` via std_attrs). Only meaningful inside a run.
                 kind_raw = getattr(record, "kind", None)
                 kind_val: str | None = str(kind_raw) if kind_raw else None
 
@@ -220,7 +214,7 @@ class DbLogHandler(logging.Handler):
                     msg=msg,
                     run_id=run_id_int,
                     kind=kind_val,
-                    extra=_json.dumps(extra),
+                    extra=json.dumps(extra),
                 ))
             except Exception:
                 pass  # Skip a bad record, don't abort the batch
