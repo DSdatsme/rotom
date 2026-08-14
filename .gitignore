@@ -14,3 +14,4 @@ node_modules/
 credentials.json
 token*.json
 .DS_Store
+.claude/skills/
