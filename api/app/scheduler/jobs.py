@@ -60,8 +60,6 @@ async def scheduled_gmail_triage_job(source: str = "scheduler") -> None:
                     notes.append("digest not sent (telegram off)")
                 else:
                     try:
-                        from app.channels.telegram import notify_owner
-
                         await notify_owner(digest)
                     except Exception as exc:  # noqa: BLE001 — delivery failure ≠ run failure
                         logger.exception("Triage digest delivery failed")

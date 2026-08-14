@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from sqlalchemy import select, func, text
 from app.observability.events import UsageEvent, RunResult, RunStart
@@ -61,8 +62,6 @@ class SqliteSink:
         resumes on its own), and either its last heartbeat or (absent one) its
         start time is older than `timeout_seconds`. Returns how many were reaped.
         """
-        from datetime import timedelta, timezone
-
         def _as_utc(dt):
             # SQLite drops tzinfo on read; treat stored datetimes as UTC.
             if dt is None:
@@ -185,8 +184,6 @@ class SqliteSink:
             }
 
     def usage_by_model_day(self, days: int) -> list[dict[str, Any]]:
-        from datetime import datetime, timedelta, timezone
-        from app.store.observability import RunLog
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         with get_obs_session() as session:
             stmt = select(
@@ -239,8 +236,6 @@ class SqliteSink:
         - q: case-insensitive LIKE match on msg
         - since/until: ISO datetime strings filtering on ts
         """
-        from datetime import datetime, timezone
-
         with get_obs_session() as session:
             stmt = select(LogEntry)
 
