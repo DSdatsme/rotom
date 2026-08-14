@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LogEntry, LogsPage } from "@/lib/api";
 import { LogsPanel } from "@/components/logs-panel";
+import { useInterval } from "@/hooks/use-interval";
 
 const POLL_INTERVAL = 3000; // ms for live-tail
 const PAGE_SIZE = 100;
@@ -118,7 +119,6 @@ export function LogsExplorer({ initialPage }: LogsExplorerProps) {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Track latest id for live-tail — needed to prepend newer rows
   const latestIdRef = useRef<number | null>(logs[0]?.id ?? null);
 
@@ -211,22 +211,7 @@ export function LogsExplorer({ initialPage }: LogsExplorerProps) {
   }, [reload]);
 
   // Live-tail polling
-  useEffect(() => {
-    if (!liveTail) {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-      return;
-    }
-    pollRef.current = setInterval(pollNewer, POLL_INTERVAL);
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
-  }, [liveTail, pollNewer]);
+  useInterval(pollNewer, liveTail ? POLL_INTERVAL : null);
 
   // ---- render ---------------------------------------------------------------
 

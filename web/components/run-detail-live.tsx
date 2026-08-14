@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { ArrowLeft, ArrowUpRight, Activity } from "lucide-react";
 import type { RunDetail, RunStatus } from "@/lib/api";
 import { formatTokens, computeDuration, parseJsonlLogs, formatDateTime } from "@/lib/obs-utils";
@@ -10,12 +10,12 @@ import { toneDot, toneCls } from "@/lib/tone";
 import { Icon } from "@/components/ui/icon";
 import { Panel } from "@/components/ui/panel";
 import { LogsPanel } from "@/components/logs-panel";
+import { useInterval } from "@/hooks/use-interval";
 
 const POLL_INTERVAL = 4000; // ms
 
 export function RunDetailLive({ initialRun, runId }: { initialRun: RunDetail; runId: string }) {
   const [run, setRun] = useState<RunDetail>(initialRun);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [, setTick] = useState(0);
 
   const isRunning = run.status === "running";
@@ -23,36 +23,16 @@ export function RunDetailLive({ initialRun, runId }: { initialRun: RunDetail; ru
   const refresh = async () => {
     try {
       const res = await fetch(`/api/run-proxy?id=${runId}`);
-      if (res.ok) {
-        const data: RunDetail = await res.json();
-        setRun(data);
-        if (data.status !== "running" && intervalRef.current) {
-          clearInterval(intervalRef.current);
-          intervalRef.current = null;
-        }
-      }
+      if (res.ok) setRun(await res.json());
     } catch {
       // network blip — ignore
     }
   };
 
-  useEffect(() => {
-    if (isRunning) intervalRef.current = setInterval(refresh, POLL_INTERVAL);
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRunning]);
+  useInterval(refresh, isRunning ? POLL_INTERVAL : null);
 
   // tick every second so the live duration counts up
-  useEffect(() => {
-    if (!isRunning) return;
-    const t = setInterval(() => setTick((n) => n + 1), 1000);
-    return () => clearInterval(t);
-  }, [isRunning]);
+  useInterval(() => setTick((n) => n + 1), isRunning ? 1000 : null);
 
   const st = RUN_STATUS[run.status as RunStatus] ?? RUN_STATUS.failure;
   const tone = toneCls(st.tone);

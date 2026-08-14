@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import type { RunLog } from "@/lib/api";
 import { RUN_STATUS } from "@/lib/view/run";
@@ -11,13 +11,13 @@ import { Icon } from "@/components/ui/icon";
 import { Panel } from "@/components/ui/panel";
 import { EmptyState } from "@/components/ui/empty-state";
 import { TriggerRunButton } from "@/components/trigger-run-button";
+import { useInterval } from "@/hooks/use-interval";
 
 const POLL_INTERVAL = 4000; // ms
 
 export function RunsList({ initialRuns }: { initialRuns: RunLog[] }) {
   const [runs, setRuns] = useState<RunLog[]>(initialRuns);
   const [source, setSource] = useState<string>("");
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const router = useRouter();
 
   const hasRunning = runs.some((r) => r.status === "running");
@@ -44,21 +44,7 @@ export function RunsList({ initialRuns }: { initialRuns: RunLog[] }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source]);
 
-  useEffect(() => {
-    if (hasRunning) {
-      intervalRef.current = setInterval(refresh, POLL_INTERVAL);
-    } else if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasRunning, source]);
+  useInterval(refresh, hasRunning ? POLL_INTERVAL : null);
 
   const now = Date.now();
 
