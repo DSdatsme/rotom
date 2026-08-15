@@ -108,6 +108,18 @@ auto-drafted replies · Conversational draft composer · Next.js dashboard with 
           `auth_setup.py <account>` again") would help.
     - [ ] Overlapping same-day timed events currently render fully-overlapping (no
           side-by-side/column layout) — fine for light days, not for busy merged calendars.
+- [x] **Digest synthesis — morning brief + weekly retro** (`tools/retro/`,
+      `workflows/daily_calendar_brief.py`, `workflows/weekly_retro.py`): a daily
+      calendar-only agenda (8:30am) and a Sunday-evening retro covering triage stats,
+      draft activity, reminders, and workflow-run counts. Spec:
+      `docs/superpowers/specs/2026-07-26-digest-synthesis-design.md`.
+  - [ ] `morning_digest.py` and `hello.py` still have the unprefixed-UTC cron bug fixed for
+        `daily_calendar_brief.py`/`weekly_retro.py` (see AGENTS.md's APScheduler timezone
+        gotcha — same trap, different scheduler); out of scope for this branch, fix separately.
+  - [ ] **Cross-source synthesis V2** (remaining backlog): meeting prep packets
+        (match a calendar event to its related email thread); conflict-aware drafting
+        (detect double-bookings across accounts, draft a decline/reschedule for
+        approval — must go through the existing HITL send-gate, never auto-send).
 
 ## Iteration 5 — Memory & channels (from blueprint)
 
