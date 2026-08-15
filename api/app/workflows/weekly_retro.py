@@ -1,8 +1,14 @@
 """Weekly retro: triage/draft/reminder/workflow-run stats for the past 7 days → Telegram."""
 
+from datetime import datetime, timedelta, timezone
+
 import inngest
 
 from app.config import get_settings
+from app.observability.sink import record_run
+from app.tools.retro.service import (
+    draft_activity, format_weekly_retro, reminder_stats, triage_stats, workflow_run_stats,
+)
 from app.workflows.client import inngest_client
 from app.workflows.lib import notify_step
 
@@ -19,13 +25,6 @@ _settings = get_settings()
 )
 async def weekly_retro(ctx: inngest.Context) -> str:
     async def gather_and_format() -> str:
-        from datetime import datetime, timedelta, timezone
-
-        from app.observability.sink import record_run
-        from app.tools.retro.service import (
-            draft_activity, format_weekly_retro, reminder_stats, triage_stats, workflow_run_stats,
-        )
-
         since = datetime.now(timezone.utc) - timedelta(days=7)
 
         with record_run("weekly_retro", source="inngest") as run:

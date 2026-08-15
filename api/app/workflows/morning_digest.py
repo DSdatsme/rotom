@@ -2,6 +2,7 @@
 
 import inngest
 
+from app.observability.sink import record_run
 from app.workflows.client import inngest_client
 from app.workflows.lib import llm, notify_step, run_script
 
@@ -23,8 +24,6 @@ async def morning_digest(ctx: inngest.Context) -> str:
         return "nothing fetched"
 
     async def summarize() -> str:
-        from app.observability.sink import record_run
-
         with record_run("morning_digest", source="inngest") as run:
             text = await llm(
                 "chat",
