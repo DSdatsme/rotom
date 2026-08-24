@@ -1,10 +1,17 @@
 """Daily calendar brief: today's merged agenda across all accounts → Telegram."""
 
+import asyncio
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 import inngest
 
 from app.config import get_settings
+from app.observability.sink import record_run
+from app.tools.calendar.client import load_accounts
+from app.tools.calendar.service import format_daily_brief, list_events_for_range
 from app.workflows.client import inngest_client
-from app.workflows.lib import notify
+from app.workflows.lib import notify_step
 
 _settings = get_settings()
 
@@ -19,15 +26,6 @@ _settings = get_settings()
 )
 async def daily_calendar_brief(ctx: inngest.Context) -> str:
     async def fetch_and_format() -> str:
-        import asyncio
-        from datetime import datetime, timedelta
-        from zoneinfo import ZoneInfo
-
-        from app.config import get_settings
-        from app.observability.sink import record_run
-        from app.tools.calendar.client import load_accounts
-        from app.tools.calendar.service import format_daily_brief, list_events_for_range
-
         settings = get_settings()
         zone = ZoneInfo(settings.timezone)
         today = datetime.now(zone).date()
@@ -48,8 +46,4 @@ async def daily_calendar_brief(ctx: inngest.Context) -> str:
 
     text = await ctx.step.run("fetch-and-format", fetch_and_format)
 
-    async def send() -> str:
-        await notify(text)
-        return "sent"
-
-    return await ctx.step.run("notify", send)
+    return await notify_step(ctx, text)

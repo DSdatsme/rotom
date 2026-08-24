@@ -7,6 +7,7 @@ from app.store.db import (
     Category, CodingRun, CodingStatus, Draft, DraftStatus, Email, Reminder, ReminderStatus,
     get_session,
 )
+from app.store.observability import RunLog, RunStatus, get_obs_session
 
 
 def triage_stats(since: datetime) -> dict[str, int]:
@@ -71,8 +72,6 @@ def workflow_run_stats(since: datetime) -> dict[str, dict]:
     and show up as bogus top-level entries) and excludes RunStatus.RUNNING rows (a
     workflow's own still-in-flight RunLog row — e.g. weekly_retro calls this function from
     inside its own `record_run` block — must not count itself as "degraded")."""
-    from app.store.observability import RunLog, RunStatus, get_obs_session
-
     stats: dict[str, dict] = {}
 
     def _bump(kind: str, is_success: bool, is_failure: bool) -> None:

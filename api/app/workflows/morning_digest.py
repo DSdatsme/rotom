@@ -2,8 +2,9 @@
 
 import inngest
 
+from app.observability.sink import record_run
 from app.workflows.client import inngest_client
-from app.workflows.lib import llm, notify, run_script
+from app.workflows.lib import llm, notify_step, run_script
 
 
 @inngest_client.create_function(
@@ -23,8 +24,6 @@ async def morning_digest(ctx: inngest.Context) -> str:
         return "nothing fetched"
 
     async def summarize() -> str:
-        from app.observability.sink import record_run
-
         with record_run("morning_digest", source="inngest") as run:
             text = await llm(
                 "chat",
@@ -36,8 +35,4 @@ async def morning_digest(ctx: inngest.Context) -> str:
 
     summary = await ctx.step.run("summarize", summarize)
 
-    async def send() -> str:
-        await notify(f"🌅 Morning digest\n\n{summary}")
-        return "sent"
-
-    return await ctx.step.run("notify", send)
+    return await notify_step(ctx, f"🌅 Morning digest\n\n{summary}")
