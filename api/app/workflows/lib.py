@@ -5,6 +5,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+import inngest
+
 from app.config import get_settings
 from app.llm.provider import extract_text, get_chat_model
 
@@ -46,3 +48,13 @@ async def notify(text: str) -> None:
     from app.channels.telegram import notify_owner
 
     await notify_owner(text)
+
+
+async def notify_step(ctx: inngest.Context, text: str) -> str:
+    """Final 'notify' step shared by every Telegram-facing digest workflow:
+    send `text` and report "sent" as the step (and workflow) result."""
+    async def send() -> str:
+        await notify(text)
+        return "sent"
+
+    return await ctx.step.run("notify", send)
