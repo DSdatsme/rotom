@@ -4,6 +4,21 @@ from sqlalchemy import select, func, text
 from app.observability.events import UsageEvent, RunResult, RunStart
 from app.store.observability import get_obs_session, RunLog, LLMUsage, RunStatus, LogEntry, utcnow
 
+
+def _as_utc(dt: datetime | None) -> datetime | None:
+    # SQLite drops tzinfo on read; treat stored datetimes as UTC.
+    if dt is None:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _iso(dt: datetime | None) -> str | None:
+    """isoformat() with the offset SQLite dropped restored, so clients don't
+    parse a bare UTC timestamp as local time (see run 20271s / #email/runs)."""
+    dt = _as_utc(dt)
+    return dt.isoformat() if dt else None
+
+
 class SqliteSink:
     def record_usage(self, e: UsageEvent) -> None:
         with get_obs_session() as session:
@@ -62,12 +77,6 @@ class SqliteSink:
         resumes on its own), and either its last heartbeat or (absent one) its
         start time is older than `timeout_seconds`. Returns how many were reaped.
         """
-        def _as_utc(dt):
-            # SQLite drops tzinfo on read; treat stored datetimes as UTC.
-            if dt is None:
-                return None
-            return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
-
         cutoff = utcnow() - timedelta(seconds=timeout_seconds)
         reaped = 0
         with get_obs_session() as session:
@@ -110,8 +119,8 @@ class SqliteSink:
                     "id": r.id,
                     "kind": r.kind,
                     "source": r.source,
-                    "started_at": r.started_at.isoformat() if r.started_at else None,
-                    "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+                    "started_at": _iso(r.started_at),
+                    "finished_at": _iso(r.finished_at),
                     "status": r.status,
                     "summary": r.summary,
                     "external_url": r.external_url,
@@ -160,7 +169,7 @@ class SqliteSink:
                     "kind": c.kind,
                     "source": c.source,
                     "status": c.status,
-                    "started_at": c.started_at.isoformat() if c.started_at else None,
+                    "started_at": _iso(c.started_at),
                 }
                 for c in child_rows
             ]
@@ -169,8 +178,8 @@ class SqliteSink:
                 "id": run.id,
                 "kind": run.kind,
                 "source": run.source,
-                "started_at": run.started_at.isoformat() if run.started_at else None,
-                "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+                "started_at": _iso(run.started_at),
+                "finished_at": _iso(run.finished_at),
                 "status": run.status,
                 "summary": run.summary,
                 "error": run.error,
@@ -283,7 +292,7 @@ class SqliteSink:
                 "logs": [
                     {
                         "id": r.id,
-                        "ts": r.ts.isoformat() if r.ts else None,
+                        "ts": _iso(r.ts),
                         "level": r.level,
                         "logger": r.logger,
                         "msg": r.msg,
