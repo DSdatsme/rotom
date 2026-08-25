@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 from app.observability.sink import current_run_id, current_run_kind
 
 _STD_LOG_ATTRS = frozenset({
-    "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
-    "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
+    "name", "msg", "args", "levelname", "levelno", "pathname",
+    "module", "exc_info", "exc_text", "stack_info", "funcName",
     "created", "msecs", "relativeCreated", "thread", "threadName", "processName",
     "process", "taskName", "run_id", "message",
 })
