@@ -71,6 +71,7 @@ class SqliteSink:
                 external_url=run.external_url,
                 parent_run_id=int(run.parent_run_id) if run.parent_run_id else None,
                 last_heartbeat_at=utcnow(),
+                trace_id=run.trace_id,
             )
             session.add(row)
             session.commit()
@@ -149,6 +150,7 @@ class SqliteSink:
                     "summary": r.summary,
                     "external_url": r.external_url,
                     "parent_run_id": r.parent_run_id,
+                    "trace_id": r.trace_id,
                 }
                 for r in rows
             ]
@@ -211,6 +213,7 @@ class SqliteSink:
                 "external_id": run.external_id,
                 "external_url": run.external_url,
                 "parent_run_id": run.parent_run_id,
+                "trace_id": run.trace_id,
                 "parent": parent,
                 "children": children,
                 "metrics": metrics,

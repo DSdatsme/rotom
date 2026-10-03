@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from enum import StrEnum
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, create_engine
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 from app.config import get_settings
@@ -34,6 +34,7 @@ class RunLog(ObsBase):
     __tablename__ = "run_log"
     __table_args__ = (
         Index("ix_run_log_parent_run_id", "parent_run_id"),
+        Index("ix_run_log_trace_id", "trace_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -54,6 +55,8 @@ class RunLog(ObsBase):
     parent_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Bumped while a run is open; powers the stale-run reaper.
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # OTel trace this run's root span belongs to (NULL for pre-tracing runs).
+    trace_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     usages: Mapped[list["LLMUsage"]] = relationship()
 
@@ -98,6 +101,40 @@ class LogEntry(ObsBase):
     trace_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     span_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     exc_info: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class Span(ObsBase):
+    """One finished OTel span. GenAI hot fields are promoted to columns; everything
+    else stays in `attributes` (JSON). `trace_id` is NULL only for backfilled v1 LLM rows."""
+    __tablename__ = "span"
+    __table_args__ = (
+        Index("ix_span_trace_id", "trace_id"),
+        Index("ix_span_start_time", "start_time"),
+        Index("ix_span_run_id", "run_id"),
+        Index("ix_span_operation", "operation"),
+    )
+
+    span_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    trace_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    parent_span_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    name: Mapped[str] = mapped_column(String(256))
+    span_kind: Mapped[str] = mapped_column(String(16), default="INTERNAL")
+    start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    status: Mapped[str] = mapped_column(String(8), default="UNSET")
+    status_message: Mapped[str] = mapped_column(Text, default="")
+    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    operation: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reasoning_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    attributes: Mapped[str] = mapped_column(Text, default="{}")
+    events: Mapped[str] = mapped_column(Text, default="[]")
 
 
 class ObsMeta(ObsBase):
@@ -150,6 +187,7 @@ def _migrate(engine) -> None:
             "external_url": "ALTER TABLE run_log ADD COLUMN external_url TEXT",
             "parent_run_id": "ALTER TABLE run_log ADD COLUMN parent_run_id INTEGER",
             "last_heartbeat_at": "ALTER TABLE run_log ADD COLUMN last_heartbeat_at DATETIME",
+            "trace_id": "ALTER TABLE run_log ADD COLUMN trace_id VARCHAR(32)",
         }
         for col, ddl in run_additions.items():
             if col not in run_cols:
@@ -157,6 +195,7 @@ def _migrate(engine) -> None:
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_run_log_parent_run_id ON run_log (parent_run_id)"
         ))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_run_log_trace_id ON run_log (trace_id)"))
 
         log_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(log_entry)"))}
         log_additions = {
@@ -170,6 +209,10 @@ def _migrate(engine) -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_log_entry_trace_id ON log_entry (trace_id)"))
 
         _scrub_secrets(conn)
+
+        from app.observability.semconv import SEMCONV_VERSION
+
+        _meta_set(conn, "genai.semconv_version", SEMCONV_VERSION)
 
 
 def _meta_get(conn, key: str) -> str | None:

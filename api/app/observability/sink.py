@@ -159,73 +159,80 @@ def record_run(
     sink/DB is unavailable or failing, run tracking degrades to a stdout warning
     and the wrapped body still executes (with `run_id = None`, so logs/usage
     simply aren't attributed to a run).
+
+    The run is also the root (or child) OTel span of its trace; `run_log.trace_id` links them.
     """
-    # Lazy imports: logging_setup imports current_run_id from this module.
+    from opentelemetry.trace import Status, StatusCode
+
+    from app.observability import semconv as sc
+    from app.observability.tracing import get_tracer, trace_id_of
     from app.store.observability import RunStatus
 
     sink = get_sink()
+    parent = current_run_id.get()  # capture BEFORE we overwrite current_run_id
 
-    # Capture the enclosing run as our parent BEFORE we overwrite current_run_id.
-    parent = current_run_id.get()
-
-    run_id: str | None = None
-    try:
-        run_id = sink.start_run(RunStart(
-            kind=kind,
-            source=source,
-            external_id=external_id,
-            external_url=external_url,
-            parent_run_id=parent,
-        ))
-    except Exception as ex:  # pragma: no cover - defensive
-        logger.warning(f"observability: failed to start run {kind!r}: {ex}")
-
-    token = current_run_id.set(run_id)
-    kind_token = current_run_kind.set(kind)
-    ctx = RunContext(run_id)
-
-    # Heartbeat: bump last_heartbeat_at on a daemon thread while the run is open,
-    # so the reaper can distinguish a genuinely-long run from a dead one. Stopped
-    # and joined on exit. Skipped entirely when run tracking is unavailable.
-    stop_beat = threading.Event()
-    beat_thread = None
-    if run_id is not None:
-        def _beat() -> None:
-            while not stop_beat.wait(HEARTBEAT_INTERVAL):
-                try:
-                    sink.heartbeat(run_id)
-                except Exception:  # pragma: no cover - defensive
-                    pass
-        beat_thread = threading.Thread(target=_beat, name=f"run-heartbeat-{run_id}", daemon=True)
-        beat_thread.start()
-
-    def _finish(status: str, *, summary: str, error: str) -> None:
-        if run_id is None:
-            return
+    with get_tracer().start_as_current_span(
+        kind, attributes={sc.ROTOM_RUN_KIND: kind, sc.ROTOM_RUN_SOURCE: source}
+    ) as run_span:
+        run_id: str | None = None
         try:
-            from app.logging_setup import flush_db_logs
-
-            flush_db_logs()  # the run's last lines land in log_entry before it reads as finished
-            sink.finish_run(run_id, RunResult(status, summary=summary, error=error))
+            run_id = sink.start_run(RunStart(
+                kind=kind, source=source, external_id=external_id, external_url=external_url,
+                parent_run_id=parent, trace_id=trace_id_of(run_span),
+            ))
         except Exception as ex:  # pragma: no cover - defensive
-            logger.warning(f"observability: failed to finish run {run_id}: {ex}")
+            logger.warning(f"observability: failed to start run {kind!r}: {ex}")
+        if run_id is not None:
+            run_span.set_attribute(sc.ROTOM_RUN_ID, int(run_id))
 
-    try:
-        yield ctx
-    except Exception as exc:
-        _finish(RunStatus.FAILURE, summary=ctx.summary or "Failed", error=ctx.error or str(exc))
-        raise
-    else:
-        if ctx._failed:
-            status = RunStatus.FAILURE
-        elif ctx._degraded:
-            status = RunStatus.DEGRADED
+        token = current_run_id.set(run_id)
+        kind_token = current_run_kind.set(kind)
+        ctx = RunContext(run_id)
+
+        stop_beat = threading.Event()
+        beat_thread = None
+        if run_id is not None:
+            def _beat() -> None:
+                while not stop_beat.wait(HEARTBEAT_INTERVAL):
+                    try:
+                        sink.heartbeat(run_id)
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+            beat_thread = threading.Thread(target=_beat, name=f"run-heartbeat-{run_id}", daemon=True)
+            beat_thread.start()
+
+        def _finish(status: str, *, summary: str, error: str) -> None:
+            run_span.set_attribute(sc.ROTOM_RUN_STATUS, str(status))
+            if summary:
+                run_span.set_attribute(sc.ROTOM_RUN_SUMMARY, summary)
+            if status == RunStatus.FAILURE:
+                run_span.set_status(Status(StatusCode.ERROR, error or summary or "failed"))
+            if run_id is None:
+                return
+            try:
+                from app.logging_setup import flush_db_logs
+
+                flush_db_logs()
+                sink.finish_run(run_id, RunResult(status, summary=summary, error=error))
+            except Exception as ex:  # pragma: no cover - defensive
+                logger.warning(f"observability: failed to finish run {run_id}: {ex}")
+
+        try:
+            yield ctx
+        except Exception as exc:
+            _finish(RunStatus.FAILURE, summary=ctx.summary or "Failed", error=ctx.error or str(exc))
+            raise
         else:
-            status = RunStatus.SUCCESS
-        _finish(status, summary=ctx.summary, error=ctx.error)
-    finally:
-        stop_beat.set()
-        if beat_thread is not None:
-            beat_thread.join(timeout=2)
-        current_run_id.reset(token)
-        current_run_kind.reset(kind_token)
+            if ctx._failed:
+                status = RunStatus.FAILURE
+            elif ctx._degraded:
+                status = RunStatus.DEGRADED
+            else:
+                status = RunStatus.SUCCESS
+            _finish(status, summary=ctx.summary, error=ctx.error)
+        finally:
+            stop_beat.set()
+            if beat_thread is not None:
+                beat_thread.join(timeout=2)
+            current_run_id.reset(token)
+            current_run_kind.reset(kind_token)

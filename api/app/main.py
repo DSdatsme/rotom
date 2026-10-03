@@ -28,6 +28,9 @@ async def main() -> None:
     validate_required_settings(settings)  # fail fast on blank/placeholder API_TOKEN
     init_db(settings.db_path)
     init_obs_db()
+    from app.observability.tracing import init_tracing, shutdown_tracing
+
+    init_tracing()
 
     # FastAPI
     api = create_app(api_token=settings.api_token)
@@ -64,6 +67,7 @@ async def main() -> None:
         from app.agent.graph import close_agent
 
         await close_agent()
+        shutdown_tracing()  # flush pending spans
 
 
 if __name__ == "__main__":

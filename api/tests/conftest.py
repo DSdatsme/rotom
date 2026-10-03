@@ -50,3 +50,25 @@ def obs_db(tmp_path):
     yield obs
     obs._engine = None
     obs._SessionFactory = None
+
+
+@pytest.fixture()
+def traced(obs_db):
+    """obs_db + a live TracerProvider exporting synchronously into the test DB."""
+    from app.observability import tracing
+
+    tracing.shutdown_tracing()
+    tracing.init_tracing(simple=True)
+    yield obs_db
+    tracing.shutdown_tracing()
+
+
+def span_rows(**filters):
+    """All exported spans (ORM rows), optionally filtered by column equality."""
+    from app.store.observability import Span, get_obs_session
+
+    with get_obs_session() as s:
+        q = s.query(Span)
+        for col, value in filters.items():
+            q = q.filter(getattr(Span, col) == value)
+        return q.order_by(Span.start_time).all()

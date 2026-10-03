@@ -32,3 +32,4 @@ class RunStart:
     external_id: str | None = None
     external_url: str | None = None
     parent_run_id: str | None = None
+    trace_id: str | None = None

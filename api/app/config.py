@@ -141,6 +141,9 @@ class Settings(BaseSettings):
     # Increase or set to 0 to keep more history. The pluggable sink seam is
     # the right place to add external shipping (e.g. Datadog, Loki) later.
     log_retention_days: int = 14
+    # Capture LLM prompts/responses + tool args/results on spans (truncated + redacted).
+    obs_capture_content: bool = True
+    obs_content_max_chars: int = 8000  # per message / payload
 
     @property
     def db_path(self) -> str:
