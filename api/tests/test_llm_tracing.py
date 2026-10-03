@@ -177,3 +177,36 @@ def test_backfill_copies_llm_usage_into_spans(obs_db):
     assert row.duration_ms == 900
     assert row.cost_usd is not None
     assert json.loads(row.attributes)["rotom.legacy"] is True
+
+
+def test_set_content_failure_on_start_does_not_raise_or_leak(traced, monkeypatch):
+    from app.observability import llm_tracing
+    from app.observability.llm_tracing import LlmTracingCallback
+
+    def boom(*a, **k):
+        raise RuntimeError("redaction exploded")
+
+    monkeypatch.setattr(llm_tracing, "set_content", boom)
+    cb = LlmTracingCallback("gemini", "gemini-2.5-flash", "chat")
+    rid = uuid.uuid4()
+    cb.on_chat_model_start({}, [[HumanMessage("hi")]], run_id=rid)
+    assert str(rid) in cb._spans
+    cb.on_llm_end(_result(), run_id=rid)
+    assert cb._spans == {}
+    assert len(span_rows(operation="chat")) == 1
+
+
+def test_error_finish_failure_does_not_raise_and_ends_span(traced, monkeypatch):
+    from app.observability.llm_tracing import LlmTracingCallback
+
+    cb = LlmTracingCallback("gemini", "gemini-2.5-flash", "draft")
+    rid = uuid.uuid4()
+    cb.on_chat_model_start({}, [[HumanMessage("hi")]], run_id=rid)
+
+    def boom(*a, **k):
+        raise RuntimeError("record_exception exploded")
+
+    monkeypatch.setattr(cb._spans[str(rid)], "record_exception", boom)
+    cb.on_llm_error(TimeoutError("x"), run_id=rid)
+    assert cb._spans == {}
+    assert len(span_rows(operation="chat")) == 1

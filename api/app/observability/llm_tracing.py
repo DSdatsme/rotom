@@ -90,9 +90,9 @@ class LlmTracingCallback(BaseCallbackHandler):
                     sc.ROTOM_LLM_ROLE: self.role,
                 },
             )
-            set_content(s, sc.INPUT_MESSAGES, messages)
             with self._lock:
                 self._spans[str(run_id)] = s
+            set_content(s, sc.INPUT_MESSAGES, messages)
         except Exception:
             logger.warning("LLM span start failed", exc_info=True)
 
@@ -145,5 +145,7 @@ class LlmTracingCallback(BaseCallbackHandler):
             s.record_exception(error)
             s.set_attribute(sc.ERROR_TYPE, type(error).__name__)
             s.set_status(Status(StatusCode.ERROR, str(error)[:500]))
+        except Exception:
+            logger.warning("LLM span error-finish failed", exc_info=True)
         finally:
             s.end()
