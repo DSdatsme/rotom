@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from typing import Protocol, Any
 
 from app.config import get_settings
-from app.observability.events import UsageEvent, RunResult, RunStart
+from app.observability.events import RunResult, RunStart
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,6 @@ current_run_kind = contextvars.ContextVar("current_run_kind", default=None)
 HEARTBEAT_INTERVAL = 60
 
 class ObservabilitySink(Protocol):
-    def record_usage(self, e: UsageEvent) -> None: ...
     def start_run(self, run: RunStart) -> str | None: ...
     def finish_run(self, run_id: str, result: RunResult) -> None: ...
     def heartbeat(self, run_id: str) -> None: ...
@@ -48,13 +47,6 @@ class QueryProvider(Protocol):
 class CompositeSink:
     def __init__(self, sinks: list[ObservabilitySink]):
         self.sinks = sinks
-        
-    def record_usage(self, e: UsageEvent) -> None:
-        for s in self.sinks:
-            try:
-                s.record_usage(e)
-            except Exception as ex:
-                logger.warning(f"Sink {s.__class__.__name__} failed to record usage: {ex}")
 
     def start_run(self, run: RunStart) -> str | None:
         run_id = None

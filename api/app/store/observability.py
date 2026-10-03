@@ -209,6 +209,7 @@ def _migrate(engine) -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_log_entry_trace_id ON log_entry (trace_id)"))
 
         _scrub_secrets(conn)
+        _backfill_llm_usage(conn)
 
         from app.observability.semconv import SEMCONV_VERSION
 
@@ -253,6 +254,52 @@ def _scrub_secrets(conn) -> None:
                     {"v": value, "m": MASK},
                 )
     _meta_set(conn, "scrub.secrets.v1", utcnow().isoformat())
+
+
+def _backfill_llm_usage(conn) -> None:
+    """One-time: copy v1 `llm_usage` rows into `span` (operation='chat', trace_id NULL —
+    they predate tracing) so LLM stats/cost cover history. llm_usage is no longer written."""
+    import json
+    from datetime import timedelta
+
+    from sqlalchemy import insert, select
+
+    from app.observability import semconv as sc
+    from app.observability.pricing import cost_usd
+
+    if _meta_get(conn, "backfill.llm_usage.v1"):
+        return
+    rows = []
+    for u in conn.execute(select(LLMUsage.__table__)).mappings():
+        end = u["ts"]
+        if end is not None and end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        duration = float(u["latency_ms"] or 0)
+        rows.append({
+            "span_id": f"l{u['id']:015d}",
+            "trace_id": None,
+            "parent_span_id": None,
+            "name": f"chat {u['model']}",
+            "span_kind": "CLIENT",
+            "start_time": end - timedelta(milliseconds=duration),
+            "end_time": end,
+            "duration_ms": duration,
+            "status": "UNSET",
+            "status_message": "",
+            "run_id": u["run_id"],
+            "operation": sc.OP_CHAT,
+            "provider": sc.PROVIDER_NAMES.get(u["provider"], u["provider"]),
+            "model": u["model"],
+            "input_tokens": u["input_tokens"],
+            "output_tokens": u["output_tokens"],
+            "cost_usd": cost_usd(u["provider"], u["model"], input_tokens=u["input_tokens"],
+                                 output_tokens=u["output_tokens"]),
+            "attributes": json.dumps({sc.ROTOM_LLM_ROLE: u["role"], sc.ROTOM_LEGACY: True}),
+            "events": "[]",
+        })
+    if rows:
+        conn.execute(insert(Span.__table__).prefix_with("OR IGNORE"), rows)
+    _meta_set(conn, "backfill.llm_usage.v1", utcnow().isoformat())
 
 
 def _prune_old_logs(engine, retention_days: int) -> None:

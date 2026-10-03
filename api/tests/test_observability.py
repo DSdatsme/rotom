@@ -162,9 +162,6 @@ def test_record_run_runs_body_when_sink_is_down(obs_db, monkeypatch):
         def finish_run(self, run_id, result):
             raise RuntimeError("db unavailable")
 
-        def record_usage(self, e):
-            raise RuntimeError("db unavailable")
-
     # get_sink already wraps in CompositeSink (which isolates per-sink errors),
     # but assert the end-to-end contract: body executes, no crash, run_id is None.
     monkeypatch.setattr(sink_mod, "get_sink", lambda: sink_mod.CompositeSink([_BrokenSink()]))

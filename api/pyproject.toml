@@ -23,6 +23,7 @@ dependencies = [
     "inngest>=0.5.18",
     "opentelemetry-api>=1.45",
     "opentelemetry-sdk>=1.45",
+    "genai-prices>=0.1.9",
 ]
 
 [dependency-groups]

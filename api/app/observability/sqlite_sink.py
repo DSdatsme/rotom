@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from sqlalchemy import select, func, text
-from app.observability.events import UsageEvent, RunResult, RunStart
-from app.store.observability import get_obs_session, RunLog, LLMUsage, RunStatus, LogEntry, utcnow
+from app.observability.events import RunResult, RunStart
+from app.store.observability import get_obs_session, RunLog, LLMUsage, Span, RunStatus, LogEntry, utcnow
 
 
 def _as_utc(dt: datetime | None) -> datetime | None:
@@ -45,22 +45,6 @@ def _render_run_logs(session, run_id: int, limit: int = 2000) -> str:
 
 
 class SqliteSink:
-    def record_usage(self, e: UsageEvent) -> None:
-        with get_obs_session() as session:
-            usage = LLMUsage(
-                ts=e.ts,
-                run_id=int(e.run_id) if e.run_id else None,
-                provider=e.provider,
-                model=e.model,
-                role=e.role,
-                input_tokens=e.input_tokens,
-                output_tokens=e.output_tokens,
-                # Feature B: persist latency
-                latency_ms=e.latency_ms,
-            )
-            session.add(usage)
-            session.commit()
-
     def start_run(self, run: RunStart) -> str:
         with get_obs_session() as session:
             row = RunLog(
@@ -162,21 +146,25 @@ class SqliteSink:
                 return None
 
             stmt = select(
-                LLMUsage.model,
-                func.sum(LLMUsage.input_tokens).label("in_tokens"),
-                func.sum(LLMUsage.output_tokens).label("out_tokens"),
-                func.avg(LLMUsage.latency_ms).label("avg_latency_ms"),
-            ).where(LLMUsage.run_id == run.id).group_by(LLMUsage.model)
+                Span.model,
+                func.count().label("calls"),
+                func.sum(Span.input_tokens).label("in_tokens"),
+                func.sum(Span.output_tokens).label("out_tokens"),
+                func.avg(Span.duration_ms).label("avg_latency_ms"),
+                func.sum(Span.cost_usd).label("cost_usd"),
+            ).where(Span.run_id == run.id, Span.operation == "chat").group_by(Span.model)
 
-            metrics = []
-            for row in session.execute(stmt):
-                metrics.append({
+            metrics = [
+                {
                     "model": row.model,
-                    "input_tokens": row.in_tokens,
-                    "output_tokens": row.out_tokens,
-                    # Feature B: per-model avg latency (rounded to int, None if no data)
+                    "calls": int(row.calls),
+                    "input_tokens": int(row.in_tokens or 0),
+                    "output_tokens": int(row.out_tokens or 0),
                     "avg_latency_ms": int(row.avg_latency_ms) if row.avg_latency_ms is not None else None,
-                })
+                    "cost_usd": float(row.cost_usd) if row.cost_usd is not None else None,
+                }
+                for row in session.execute(stmt)
+            ]
 
             # Parent breadcrumb (when nested)
             parent = None
