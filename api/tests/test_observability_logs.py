@@ -1,23 +1,6 @@
 """Tests for Feature A (LogEntry/list_logs) and Feature B (latency_ms)."""
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-
-@pytest.fixture()
-def obs_db(tmp_path):
-    """Fresh observability DB per test with migrations applied."""
-    from app.store import observability as obs
-
-    engine = create_engine(f"sqlite:///{tmp_path / 'obs.db'}")
-    obs.ObsBase.metadata.create_all(engine)
-    obs._migrate(engine)
-    obs._engine = engine
-    obs._SessionFactory = sessionmaker(engine, expire_on_commit=False)
-    yield obs
-    obs._engine = None
-    obs._SessionFactory = None
 
 
 # ---------------------------------------------------------------------------

@@ -1,20 +1,4 @@
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-
-@pytest.fixture()
-def obs_db(tmp_path):
-    """Point the observability sink at a throwaway SQLite file."""
-    from app.store import observability as obs
-
-    engine = create_engine(f"sqlite:///{tmp_path / 'obs.db'}")
-    obs.ObsBase.metadata.create_all(engine)
-    obs._engine = engine
-    obs._SessionFactory = sessionmaker(engine, expire_on_commit=False)
-    yield obs
-    obs._engine = None
-    obs._SessionFactory = None
 
 
 def test_record_run_is_running_mid_flight_then_success(obs_db):

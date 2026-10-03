@@ -18,7 +18,6 @@ class RunResult:
     status: str
     summary: str = ""
     error: str = ""
-    logs: str = ""
 
 
 @dataclass(frozen=True)

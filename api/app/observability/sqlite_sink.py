@@ -19,6 +19,31 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
 
 
+def _log_row_event(r: LogEntry) -> dict[str, Any]:
+    """A stored log_entry row → the same event shape stdout prints (log_schema)."""
+    import json
+
+    event: dict[str, Any] = {
+        "ts": _iso(r.ts), "level": r.level, "logger": r.logger, "msg": r.msg,
+        "run_id": r.run_id, "kind": r.kind, "trace_id": r.trace_id,
+        "span_id": r.span_id, "exc_info": r.exc_info,
+    }
+    try:
+        event.update(json.loads(r.extra or "{}"))
+    except ValueError:
+        pass
+    return event
+
+
+def _render_run_logs(session, run_id: int, limit: int = 2000) -> str:
+    from app.observability.log_schema import render
+
+    rows = session.scalars(
+        select(LogEntry).where(LogEntry.run_id == run_id).order_by(LogEntry.id.asc()).limit(limit)
+    ).all()
+    return "\n".join(render(_log_row_event(r)) for r in rows)
+
+
 class SqliteSink:
     def record_usage(self, e: UsageEvent) -> None:
         with get_obs_session() as session:
@@ -59,7 +84,6 @@ class SqliteSink:
                 run.status = result.status
                 run.summary = result.summary
                 run.error = result.error
-                run.logs = result.logs
                 session.commit()
 
     def heartbeat(self, run_id: str) -> None:
@@ -183,7 +207,7 @@ class SqliteSink:
                 "status": run.status,
                 "summary": run.summary,
                 "error": run.error,
-                "logs": run.logs,
+                "logs": run.logs or _render_run_logs(session, run.id),
                 "external_id": run.external_id,
                 "external_url": run.external_url,
                 "parent_run_id": run.parent_run_id,
@@ -236,6 +260,7 @@ class SqliteSink:
         until: str | None = None,
         limit: int = 100,
         before_id: int | None = None,
+        trace_id: str | None = None,
     ) -> dict[str, Any]:
         """Newest-first, id-based cursor pagination for the Logs Explorer.
 
@@ -261,6 +286,9 @@ class SqliteSink:
 
             if run_id is not None:
                 stmt = stmt.where(LogEntry.run_id == run_id)
+
+            if trace_id:
+                stmt = stmt.where(LogEntry.trace_id == trace_id)
 
             if q:
                 stmt = stmt.where(LogEntry.msg.ilike(f"%{q}%"))
@@ -299,6 +327,9 @@ class SqliteSink:
                         "run_id": r.run_id,
                         "kind": r.kind,
                         "extra": r.extra,
+                        "trace_id": r.trace_id,
+                        "span_id": r.span_id,
+                        "exc_info": r.exc_info,
                     }
                     for r in rows
                 ],

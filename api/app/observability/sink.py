@@ -42,6 +42,7 @@ class QueryProvider(Protocol):
         until: str | None = None,
         limit: int = 100,
         before_id: int | None = None,
+        trace_id: str | None = None,
     ) -> dict[str, Any]: ...
 
 class CompositeSink:
@@ -161,7 +162,6 @@ def record_run(
     """
     # Lazy imports: logging_setup imports current_run_id from this module.
     from app.store.observability import RunStatus
-    from app.logging_setup import _attach_buffer, _detach
 
     sink = get_sink()
 
@@ -179,13 +179,6 @@ def record_run(
         ))
     except Exception as ex:  # pragma: no cover - defensive
         logger.warning(f"observability: failed to start run {kind!r}: {ex}")
-
-    handler = None
-    if run_id is not None:
-        try:
-            handler = _attach_buffer(run_id)
-        except Exception as ex:  # pragma: no cover - defensive
-            logger.warning(f"observability: failed to attach log buffer for run {run_id}: {ex}")
 
     token = current_run_id.set(run_id)
     kind_token = current_run_kind.set(kind)
@@ -206,21 +199,14 @@ def record_run(
         beat_thread = threading.Thread(target=_beat, name=f"run-heartbeat-{run_id}", daemon=True)
         beat_thread.start()
 
-    def _captured_logs() -> str:
-        if handler is None:
-            return ""
-        try:
-            return handler.text()
-        except Exception:  # pragma: no cover - defensive
-            return ""
-
     def _finish(status: str, *, summary: str, error: str) -> None:
         if run_id is None:
             return
         try:
-            sink.finish_run(run_id, RunResult(
-                status, summary=summary, error=error, logs=_captured_logs(),
-            ))
+            from app.logging_setup import flush_db_logs
+
+            flush_db_logs()  # the run's last lines land in log_entry before it reads as finished
+            sink.finish_run(run_id, RunResult(status, summary=summary, error=error))
         except Exception as ex:  # pragma: no cover - defensive
             logger.warning(f"observability: failed to finish run {run_id}: {ex}")
 
@@ -243,8 +229,3 @@ def record_run(
             beat_thread.join(timeout=2)
         current_run_id.reset(token)
         current_run_kind.reset(kind_token)
-        if handler is not None:
-            try:
-                _detach(handler)
-            except Exception:  # pragma: no cover - defensive
-                pass

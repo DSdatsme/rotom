@@ -84,6 +84,7 @@ class LogEntry(ObsBase):
     __table_args__ = (
         Index("ix_log_entry_ts", "ts"),
         Index("ix_log_entry_run_id", "run_id"),
+        Index("ix_log_entry_trace_id", "trace_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -94,6 +95,17 @@ class LogEntry(ObsBase):
     run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
     extra: Mapped[str] = mapped_column(Text, default="{}")  # JSON string
+    trace_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    span_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    exc_info: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ObsMeta(ObsBase):
+    """Key/value markers: one-time migrations done, followed semconv version."""
+    __tablename__ = "obs_meta"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
 
 
 _engine = None
@@ -145,6 +157,59 @@ def _migrate(engine) -> None:
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_run_log_parent_run_id ON run_log (parent_run_id)"
         ))
+
+        log_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(log_entry)"))}
+        log_additions = {
+            "trace_id": "ALTER TABLE log_entry ADD COLUMN trace_id VARCHAR(32)",
+            "span_id": "ALTER TABLE log_entry ADD COLUMN span_id VARCHAR(16)",
+            "exc_info": "ALTER TABLE log_entry ADD COLUMN exc_info TEXT",
+        }
+        for col, ddl in log_additions.items():
+            if col not in log_cols:
+                conn.execute(text(ddl))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_log_entry_trace_id ON log_entry (trace_id)"))
+
+        _scrub_secrets(conn)
+
+
+def _meta_get(conn, key: str) -> str | None:
+    from sqlalchemy import text
+
+    row = conn.execute(text("SELECT value FROM obs_meta WHERE key = :k"), {"k": key}).first()
+    return row[0] if row else None
+
+
+def _meta_set(conn, key: str, value: str) -> None:
+    from sqlalchemy import text
+
+    conn.execute(
+        text("INSERT INTO obs_meta (key, value) VALUES (:k, :v) "
+             "ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
+        {"k": key, "v": value},
+    )
+
+
+# Columns that v1 may have persisted with secrets in them.
+_SCRUB_COLUMNS = {"log_entry": ("msg", "extra"), "run_log": ("logs", "error", "summary")}
+
+
+def _scrub_secrets(conn) -> None:
+    """One-time: mask secret values v1 persisted unredacted (httpx logged Telegram URLs
+    containing the bot token). New rows are redacted at write time by log_schema."""
+    from sqlalchemy import text
+
+    from app.observability.redact import MASK, secret_values
+
+    if _meta_get(conn, "scrub.secrets.v1"):
+        return
+    for value in secret_values():
+        for table, cols in _SCRUB_COLUMNS.items():
+            for col in cols:
+                conn.execute(
+                    text(f"UPDATE {table} SET {col} = replace({col}, :v, :m) WHERE instr({col}, :v) > 0"),
+                    {"v": value, "m": MASK},
+                )
+    _meta_set(conn, "scrub.secrets.v1", utcnow().isoformat())
 
 
 def _prune_old_logs(engine, retention_days: int) -> None:

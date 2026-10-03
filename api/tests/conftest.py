@@ -32,3 +32,21 @@ def make_email(**overrides) -> dict:
     }
     base.update(overrides)
     return base
+
+
+@pytest.fixture()
+def obs_db(tmp_path):
+    """Fresh observability DB (tables + migrations + views) per test."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.store import observability as obs
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'obs.db'}")
+    obs.ObsBase.metadata.create_all(engine)
+    obs._migrate(engine)
+    obs._engine = engine
+    obs._SessionFactory = sessionmaker(engine, expire_on_commit=False)
+    yield obs
+    obs._engine = None
+    obs._SessionFactory = None

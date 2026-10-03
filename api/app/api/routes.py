@@ -695,10 +695,12 @@ def create_app(api_token: str) -> FastAPI:
         until: str = "",
         limit: int = 100,
         before_id: int | None = None,
+        trace_id: str = "",
     ):
         from app.observability.sink import get_query_provider
         return _safe_obs_read(
             lambda: get_query_provider().list_logs(
+                trace_id=trace_id or None,
                 level=level or None,
                 kind=kind or None,
                 run_id=run_id,
