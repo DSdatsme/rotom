@@ -757,16 +757,17 @@ def create_app(api_token: str) -> FastAPI:
 
     @app.post("/api/triage/trigger", dependencies=[Depends(require_auth)])
     async def trigger_triage_job():
-        from app.scheduler.jobs import get_scheduler, scheduled_gmail_triage_job
+        from app.scheduler.jobs import add_job_detached, get_scheduler, scheduled_gmail_triage_job
         from apscheduler.triggers.date import DateTrigger
         from app.store.db import utcnow
         import uuid
-        
+
         scheduler = get_scheduler()
         if not scheduler:
             raise HTTPException(status_code=500, detail="Scheduler not running")
-            
-        scheduler.add_job(
+
+        add_job_detached(
+            scheduler,
             scheduled_gmail_triage_job,
             trigger=DateTrigger(run_date=utcnow()),
             kwargs={"source": "manual"},

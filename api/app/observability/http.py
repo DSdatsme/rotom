@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 TRACED_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 UNMATCHED_ROUTE = "<unmatched>"
 _UNOBSERVED_PATHS = frozenset({"/metrics"})
+# The Inngest dev server PUTs here every ~5 s; tracing it would mint a root trace per poll.
+_UNTRACED_PATHS = frozenset({"/api/inngest"})
 
 
 def _route_template(request: Request) -> str:
@@ -40,7 +42,7 @@ def install_http_observability(app: FastAPI) -> None:
                 f"{method} {request.url.path}", kind=SpanKind.SERVER,
                 attributes={sc.HTTP_METHOD: method, sc.URL_PATH: request.url.path},
             )
-            if method in TRACED_METHODS else nullcontext()
+            if method in TRACED_METHODS and request.url.path not in _UNTRACED_PATHS else nullcontext()
         )
         with cm as server_span:
             try:

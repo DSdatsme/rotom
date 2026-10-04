@@ -50,6 +50,37 @@ def test_server_error_marks_span_error(client):
     assert row.status == "ERROR"
 
 
+def test_inngest_serve_path_is_never_traced_but_still_metered(session_db, traced, monkeypatch):
+    from app.api.routes import create_app
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "metrics_enabled", True)
+    app = create_app(api_token=TOKEN)
+
+    @app.put("/api/inngest")
+    def inngest_sync():
+        return {"ok": True}
+
+    @app.post("/api/inngest")
+    def inngest_call():
+        return {"ok": True}
+
+    client = TestClient(app)
+    assert client.put("/api/inngest").status_code == 200
+    assert client.post("/api/inngest?fnId=f&stepId=s").status_code == 200
+    assert span_rows(span_kind="SERVER") == []
+    body = client.get("/metrics", headers=AUTH).text
+    assert 'method="PUT",route="/api/inngest"' in body
+    assert 'method="POST",route="/api/inngest"' in body
+
+    from tests.test_api_routes import _seed
+
+    _, draft_id = _seed()
+    assert client.post(f"/api/drafts/{draft_id}/discard", headers=AUTH).status_code == 200
+    (row,) = span_rows(span_kind="SERVER")
+    assert row.name == "POST /api/drafts/{draft_id}/discard"
+
+
 def test_metrics_404_when_disabled(client):
     assert client.get("/metrics", headers=AUTH).status_code == 404
 
