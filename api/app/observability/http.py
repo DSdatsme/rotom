@@ -14,12 +14,14 @@ from app.observability import semconv as sc
 logger = logging.getLogger(__name__)
 
 TRACED_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+UNMATCHED_ROUTE = "<unmatched>"
 _UNOBSERVED_PATHS = frozenset({"/metrics"})
 
 
 def _route_template(request: Request) -> str:
+    # Raw paths of unmatched requests (scanners) must not become label/span-name values.
     route = request.scope.get("route")
-    return getattr(route, "path", None) or request.url.path
+    return getattr(route, "path", None) or UNMATCHED_ROUTE
 
 
 def install_http_observability(app: FastAPI) -> None:
