@@ -144,6 +144,7 @@ class Settings(BaseSettings):
     # Capture LLM prompts/responses + tool args/results on spans (truncated + redacted).
     obs_capture_content: bool = True
     obs_content_max_chars: int = 8000  # per message / payload
+    metrics_enabled: bool = False  # expose Prometheus /metrics (bearer auth)
 
     @property
     def db_path(self) -> str:

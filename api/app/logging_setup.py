@@ -177,3 +177,10 @@ def setup_logging() -> None:
 
     _db_log_handler = DbLogHandler()
     root.addHandler(_db_log_handler)
+
+    from app.config import get_settings
+
+    if get_settings().metrics_enabled:
+        from app.observability.metrics import LogCountHandler
+
+        root.addHandler(LogCountHandler())

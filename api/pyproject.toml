@@ -24,6 +24,7 @@ dependencies = [
     "opentelemetry-api>=1.45",
     "opentelemetry-sdk>=1.45",
     "genai-prices>=0.1.9",
+    "prometheus-client>=0.26",
 ]
 
 [dependency-groups]

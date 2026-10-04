@@ -54,6 +54,12 @@ def init_tracing(*, exporter: SpanExporter | None = None, simple: bool = False) 
     provider.add_span_processor(
         SimpleSpanProcessor(exp) if simple else BatchSpanProcessor(exp, schedule_delay_millis=2000)
     )
+    from app.config import get_settings
+
+    if get_settings().metrics_enabled:
+        from app.observability.metrics import MetricsSpanProcessor
+
+        provider.add_span_processor(MetricsSpanProcessor())
     _provider = provider
 
 

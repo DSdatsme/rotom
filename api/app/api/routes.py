@@ -143,6 +143,10 @@ class DraftUpdate(BaseModel):
 def create_app(api_token: str) -> FastAPI:
     app = FastAPI(title="rotom api")
 
+    from app.observability.http import install_http_observability
+
+    install_http_observability(app)
+
     async def require_auth(request: Request) -> None:
         import hmac
 
@@ -156,6 +160,18 @@ def create_app(api_token: str) -> FastAPI:
     @app.get("/api/health")
     async def health() -> dict:
         return {"status": "ok"}
+
+    @app.get("/metrics", dependencies=[Depends(require_auth)], include_in_schema=False)
+    def metrics_endpoint():
+        from fastapi import Response
+
+        from app.config import get_settings
+        from app.observability import metrics
+
+        if not get_settings().metrics_enabled:
+            raise HTTPException(404, "Metrics disabled (set METRICS_ENABLED=true)")
+        body, content_type = metrics.render()
+        return Response(content=body, media_type=content_type)
 
     def _parse_date(value: str):
         try:
