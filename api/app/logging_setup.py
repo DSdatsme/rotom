@@ -30,6 +30,7 @@ _LOG_ENTRY_COLUMNS = ("level", "logger", "msg", "run_id", "kind", "trace_id", "s
 
 _DB_FLUSH_EVERY = 20          # flush after this many buffered records
 _DB_FLUSH_INTERVAL_SEC = 5.0  # …and at least this often
+_FLUSH_WAIT_SEC = 2.0         # explicit flushes wait this long for an in-progress one
 
 
 def _as_int(value) -> int | None:
@@ -42,8 +43,9 @@ def _as_int(value) -> int | None:
 class DbLogHandler(logging.Handler):
     """Persist log records to `log_entry` (observability.db), buffered.
 
-    Reentrancy-safe: ignores `sqlalchemy*` loggers and drops records emitted during
-    its own flush. Never raises into the logging call.
+    Reentrancy-safe: ignores `sqlalchemy*` loggers and drops records the flushing thread
+    emits during its own flush (other threads' records are kept for the next flush).
+    One flush runs at a time. Never raises into the logging call.
     """
 
     _BLOCKED_PREFIXES = ("sqlalchemy",)
@@ -51,9 +53,10 @@ class DbLogHandler(logging.Handler):
     def __init__(self):
         super().__init__()
         self.addFilter(ContextFilter())
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()        # guards _buffer / _timer
+        self._flush_lock = threading.Lock()  # serializes flushes
+        self._local = threading.local()      # .flushing: this thread is inside _persist
         self._buffer: list = []
-        self._writing = False
         self._timer: threading.Timer | None = None
         self._closed = False
 
@@ -61,9 +64,9 @@ class DbLogHandler(logging.Handler):
         try:
             if self._closed or (record.name or "").startswith(self._BLOCKED_PREFIXES):
                 return
+            if getattr(self._local, "flushing", False):
+                return  # re-entrancy from this thread's own flush — drop to avoid a storm
             with self._lock:
-                if self._writing:
-                    return  # re-entrancy from our own flush path — drop to avoid a storm
                 self._buffer.append(record)
                 should_flush = len(self._buffer) >= _DB_FLUSH_EVERY
             if should_flush:
@@ -76,28 +79,40 @@ class DbLogHandler(logging.Handler):
     def _arm_timer(self):
         with self._lock:
             if self._timer is None and not self._closed:
-                t = threading.Timer(_DB_FLUSH_INTERVAL_SEC, self._flush)
+                t = threading.Timer(_DB_FLUSH_INTERVAL_SEC, self._on_timer)
                 t.daemon = True
                 t.start()
                 self._timer = t
 
-    def _flush(self):
+    def _on_timer(self):
         with self._lock:
-            if self._writing:
-                return
-            if not self._buffer:
-                self._timer = None
-                return
-            records, self._buffer = self._buffer, []
-            self._writing = True
             self._timer = None
+        self._flush()
+
+    def _flush(self, wait: float | None = None) -> None:
+        """Persist the buffer. If another flush is running, `wait=None` (timer/size path)
+        leaves the records for a re-armed timer; `wait=N` waits up to N s for it first."""
         try:
-            self._persist(records)
+            acquired = (self._flush_lock.acquire(blocking=False) if wait is None
+                        else self._flush_lock.acquire(timeout=wait))
+        except Exception:
+            return
+        if not acquired:
+            self._arm_timer()
+            return
+        try:
+            with self._lock:
+                records, self._buffer = self._buffer, []
+            if records:
+                self._local.flushing = True
+                try:
+                    self._persist(records)
+                finally:
+                    self._local.flushing = False
         except Exception:
             pass  # never let a flush kill the app
         finally:
-            with self._lock:
-                self._writing = False
+            self._flush_lock.release()
 
     def _persist(self, records: list) -> None:
         from app.store.observability import LogEntry, get_obs_session
@@ -138,17 +153,7 @@ class DbLogHandler(logging.Handler):
                 self._timer.cancel()
             except Exception:
                 pass
-        with self._lock:
-            records, self._buffer = self._buffer, []
-            self._writing = True
-        try:
-            if records:
-                self._persist(records)
-        except Exception:
-            pass
-        finally:
-            with self._lock:
-                self._writing = False
+        self._flush(wait=_FLUSH_WAIT_SEC)
         super().close()
 
 
@@ -156,9 +161,10 @@ _db_log_handler: DbLogHandler | None = None
 
 
 def flush_db_logs() -> None:
-    """Persist buffered records now (e.g. so a just-finished run's logs are queryable)."""
+    """Persist buffered records now (e.g. so a just-finished run's logs are queryable),
+    waiting briefly for an in-progress flush rather than skipping."""
     if _db_log_handler is not None:
-        _db_log_handler._flush()
+        _db_log_handler._flush(wait=_FLUSH_WAIT_SEC)
 
 
 def setup_logging() -> None:

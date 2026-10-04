@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from sqlalchemy import select, func, text
 from app.observability.events import RunResult, RunStart
+from app.observability.redact import redact
 from app.store.observability import get_obs_session, RunLog, LLMUsage, Span, RunStatus, LogEntry, utcnow
 
 
@@ -67,8 +68,8 @@ class SqliteSink:
             if run:
                 run.finished_at = utcnow()
                 run.status = result.status
-                run.summary = result.summary
-                run.error = result.error
+                run.summary = redact(result.summary)
+                run.error = redact(result.error)
                 session.commit()
 
     def heartbeat(self, run_id: str) -> None:

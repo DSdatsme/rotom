@@ -29,6 +29,24 @@ def test_record_run_marks_failure_and_records_error_on_exception(obs_db):
     assert "boom" in done["error"]
 
 
+def test_run_error_and_summary_are_redacted_before_persisting(obs_db):
+    from app.observability.sink import record_run, get_query_provider
+
+    token = "1234567890:AAAbbbCCCdddEEEfffGGGhhhIIIjjjKKKlll0"
+    captured = {}
+    with pytest.raises(RuntimeError):
+        with record_run("test_kind") as run:
+            captured["id"] = run.run_id
+            run.summary = f"called https://api.telegram.org/bot{token}/sendMessage"
+            raise RuntimeError("401 for Authorization: Bearer abcdef0123456789xyz")
+
+    done = get_query_provider().get_run(captured["id"])
+    assert "abcdef0123456789xyz" not in done["error"]
+    assert "[REDACTED]" in done["error"]
+    assert token not in done["summary"]
+    assert "[REDACTED]" in done["summary"]
+
+
 def test_record_run_fail_without_exception_marks_failure(obs_db):
     from app.observability.sink import record_run, get_query_provider
 

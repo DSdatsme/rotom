@@ -7,6 +7,7 @@ testable and reusable from both the scheduler and the chat agent's run_triage to
 import logging
 from dataclasses import dataclass, field
 
+from opentelemetry.trace import Status, StatusCode
 from sqlalchemy.exc import IntegrityError
 
 from app.observability.tracing import span
@@ -130,7 +131,7 @@ def run_triage(fetchers, classify_fn, draft_fn, max_per_account: int = 50, *, sc
         logger.info("No clean emails to classify. Skipping.")
         return result
     
-    with span("triage.classify", attributes={"rotom.triage.emails": len(clean_dicts)}):
+    with span("triage.classify", attributes={"rotom.triage.emails": len(clean_dicts)}) as step:
         logger.info("Classifying %d clean emails", len(clean_dicts))
         try:
             classified = classify_fn(clean_dicts)
@@ -139,6 +140,8 @@ def run_triage(fetchers, classify_fn, draft_fn, max_per_account: int = 50, *, sc
             # them, rather than failing the whole pass (e.g. an LLM read timeout).
             logger.exception("Classification failed; leaving %d emails for the next run", len(clean_dicts))
             result.errors["classify"] = f"classification failed: {exc}"
+            step.record_exception(exc)
+            step.set_status(Status(StatusCode.ERROR, "classification failed"))
             return result
         logger.info("Classification complete")
 
@@ -147,6 +150,7 @@ def run_triage(fetchers, classify_fn, draft_fn, max_per_account: int = 50, *, sc
     #     (checkpointer, dashboard, scheduler) for the whole batch. (Failure degrades.)
     draft_bodies: dict[str, str] = {}
     with span("triage.draft") as step:
+        draft_failures = 0
         for e in classified:
             if e["category"] == Category.NEEDS_REPLY:
                 try:
@@ -155,7 +159,10 @@ def run_triage(fetchers, classify_fn, draft_fn, max_per_account: int = 50, *, sc
                 except Exception as exc:  # noqa: BLE001 — degrade, never lose the email
                     logger.exception("Auto-draft failed for %s", e["message_id"])
                     result.errors[f"draft:{e['message_id']}"] = f"draft failed: {exc}"
+                    draft_failures += 1
         step.set_attribute("rotom.triage.drafts", len(draft_bodies))
+        if draft_failures:
+            step.set_status(Status(StatusCode.ERROR, f"{draft_failures} draft(s) failed"))
 
     # 5b. Store emails + drafts + mark processed. Each message is its own savepoint, so a
     #     concurrent triage that already inserted it (UniqueConstraint race) is skipped

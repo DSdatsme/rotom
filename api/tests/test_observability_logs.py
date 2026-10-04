@@ -286,6 +286,102 @@ def test_db_log_handler_batch_flush(obs_db):
     assert count == 5
 
 
+def _log_record(msg: str):
+    import logging
+
+    return logging.LogRecord(name="app.test", level=logging.INFO, pathname="", lineno=0,
+                             msg=msg, args=(), exc_info=None)
+
+
+def _persisted_msgs() -> set[str]:
+    from app.store.observability import LogEntry, get_obs_session
+
+    with get_obs_session() as s:
+        return {e.msg for e in s.query(LogEntry).all()}
+
+
+def _blocking_persist(handler):
+    """Patch handler._persist so the first flush blocks until `release` is set."""
+    import threading
+
+    in_persist, release = threading.Event(), threading.Event()
+    real_persist = handler._persist
+
+    def persist(records):
+        if not in_persist.is_set():
+            in_persist.set()
+            handler.emit(_log_record("emitted by the flushing thread"))  # own re-entry: dropped
+            release.wait(timeout=5)
+        real_persist(records)
+
+    handler._persist = persist
+    return in_persist, release
+
+
+def test_db_log_handler_keeps_other_threads_records_during_a_flush(obs_db):
+    import threading
+
+    from app.logging_setup import DbLogHandler
+
+    handler = DbLogHandler()
+    try:
+        in_persist, release = _blocking_persist(handler)
+        handler.emit(_log_record("first"))
+        flusher = threading.Thread(target=handler._flush)
+        flusher.start()
+        assert in_persist.wait(timeout=5)
+        other = threading.Thread(target=lambda: handler.emit(_log_record("from another thread")))
+        other.start()
+        other.join()
+        release.set()
+        flusher.join()
+        handler._flush()
+        msgs = _persisted_msgs()
+        assert {"first", "from another thread"} <= msgs
+        assert "emitted by the flushing thread" not in msgs
+    finally:
+        handler.close()
+
+
+def test_flush_db_logs_waits_for_an_in_progress_flush(obs_db, monkeypatch):
+    import threading
+
+    from app import logging_setup
+
+    handler = logging_setup.DbLogHandler()
+    monkeypatch.setattr(logging_setup, "_db_log_handler", handler)
+    try:
+        in_persist, release = _blocking_persist(handler)
+        handler.emit(_log_record("first"))
+        flusher = threading.Thread(target=handler._flush)
+        flusher.start()
+        assert in_persist.wait(timeout=5)
+        handler.emit(_log_record("run's last line"))
+        threading.Timer(0.2, release.set).start()
+        logging_setup.flush_db_logs()
+        assert {"first", "run's last line"} <= _persisted_msgs()
+        flusher.join()
+    finally:
+        handler.close()
+
+
+def test_size_triggered_flush_does_not_block_while_another_flush_runs(obs_db):
+    from app.logging_setup import _DB_FLUSH_EVERY, DbLogHandler
+
+    handler = DbLogHandler()
+    try:
+        handler._flush_lock.acquire()
+        try:
+            for i in range(_DB_FLUSH_EVERY + 5):
+                handler.emit(_log_record(f"burst {i}"))  # must return, not wait for the lock
+        finally:
+            handler._flush_lock.release()
+        handler._flush()
+        assert {f"burst {i}" for i in range(_DB_FLUSH_EVERY + 5)} <= _persisted_msgs()
+    finally:
+        handler.close()
+
+
 # ---------------------------------------------------------------------------
 # Feature A: log retention
 # ---------------------------------------------------------------------------
