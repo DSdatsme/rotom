@@ -23,8 +23,8 @@ api:
 web:
 	cd web && npm run dev
 
-obs-sql:   ## open the observability DB in sqlite3 (try: SELECT * FROM v_runs ORDER BY run_id DESC LIMIT 10;)
-	sqlite3 -box -header $(OBS_DB)
+obs-sql:   ## open the observability DB read-only in sqlite3 (try: SELECT * FROM v_runs ORDER BY run_id DESC LIMIT 10;)
+	sqlite3 -readonly -box -header $(OBS_DB)
 
 obs-ui:    ## browse/query the observability DB in Datasette (read-only) at http://127.0.0.1:8001
 	uvx datasette $(OBS_DB) --port 8001 --setting sql_time_limit_ms 5000

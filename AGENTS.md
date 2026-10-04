@@ -107,6 +107,9 @@ cd web && npm run lint         # eslint
   serialized by a lock + idempotent inserts; don't add a fourth path that bypasses them.
 - **APScheduler timezone:** triggers must pass `timezone=settings.timezone`, else they
   default to host-local/UTC.
+- **APScheduler context leak:** a runtime `add_job` captures the caller's contextvars and every
+  later job run inherits them (a request/tool span would parent all future cron runs). Add
+  jobs at runtime via `scheduler.jobs.add_job_detached`, never `scheduler.add_job` directly.
 - **`Bot(...)` leaks httpx pools** in this long-lived process — always go through
   `notify_owner()` / `async with Bot(...)`.
 - **Logging has one format file:** every log line (stdout + `log_entry` + dashboard) is built by

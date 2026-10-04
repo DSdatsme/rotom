@@ -1,6 +1,6 @@
 # Querying rotom's telemetry
 
-Everything is in `data/observability.db` (SQLite). `make obs-sql` opens it in sqlite3
+Everything is in `data/observability.db` (SQLite). `make obs-sql` opens it read-only in sqlite3
 (`OBS_DB=path` overrides the default `api/data/observability.db`); `make obs-ui` opens
 Datasette (read-only) at http://127.0.0.1:8001. DuckDB works too:
 `duckdb -c "INSTALL sqlite; LOAD sqlite; ATTACH 'api/data/observability.db' AS obs (TYPE sqlite); SELECT * FROM obs.v_runs LIMIT 5"`.
@@ -17,7 +17,7 @@ Legacy (pre-tracing) LLM rows were backfilled into `span` with `trace_id NULL` a
 |---|---|
 | `run_log` / `v_runs` | unit of work (triage, reminder, draft...); `v_runs` adds LLM calls, tokens, cost |
 | `span` | OTel span (run, step, agent turn, tool call, LLM call, API request) |
-| `v_traces` | trace (root span + rollups); `trace_type` is `run`, `chat`, `http` or `other` |
+| `v_traces` | trace (root span + rollups); `trace_type` is `run`, `chat`, `http` or `other`; `run_id` falls back to a run inside the trace (e.g. a draft regeneration under an `http` root) |
 | `v_llm_calls` | LLM call incl. role, tokens, cost, prompt/response |
 | `v_tool_calls` | agent tool call incl. arguments/result |
 | `v_errors` | ERROR span or ERROR/CRITICAL log line |

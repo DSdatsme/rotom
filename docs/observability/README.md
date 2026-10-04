@@ -14,8 +14,7 @@ dashboard. No extra service.
 code ──span()/record_run()──▶ OTel SDK ──▶ BatchSpanProcessor ──▶ SqliteSpanExporter ──▶ span
                                  └──▶ MetricsSpanProcessor ──▶ /metrics (opt-in)
 logging ──▶ log_schema.to_event() ──▶ stdout (JSON)
-                                  ├──▶ log_entry (DbLogHandler, buffered)
-                                  └──▶ per-run buffer
+                                  └──▶ log_entry (DbLogHandler, buffered)
 span + run_log + log_entry ──▶ views (v_runs, v_traces, v_llm_calls, v_tool_calls, v_errors)
                            ──▶ /api/observability/* ──▶ dashboard
 ```
@@ -25,7 +24,7 @@ span + run_log + log_entry ──▶ views (v_runs, v_traces, v_llm_calls, v_too
   through `redact()`. Noisy third-party loggers are capped in `logging_setup.NOISE_LEVELS`
   (`httpx`/`httpcore`/`uvicorn.access`/`apscheduler.*`/`sqlalchemy` at WARNING).
 - **Spans:** `init_tracing()` (called in `main` after `init_obs_db`) installs the provider,
-  a `RunAttributionProcessor` (stamps `rotom.run_id`), and the exporter. Inert until called.
+  a `RunAttributionProcessor` (stamps `rotom.run.id`), and the exporter. Inert until called.
 - **Views** are dropped and recreated on every startup, so definition changes ship with code.
 
 ## What emits spans
@@ -36,8 +35,8 @@ span + run_log + log_entry ──▶ views (v_runs, v_traces, v_llm_calls, v_too
 | `agent.graph.run_agent` | `invoke_agent rotom` | one per chat turn; `gen_ai.conversation.id` = thread |
 | agent tools (wrapped once in the toolkit) | `execute_tool {name}` | arguments/result captured |
 | every LLM call (`LlmTracingCallback`) | `chat {model}` (CLIENT) | provider, models, tokens (input/output/cache-read/reasoning), `rotom.llm.role`, `rotom.cost_usd`, prompt/response; ended on error too |
-| `run_triage` | `triage.fetch` (+ `gmail.fetch {account}`), `triage.dedup`, `triage.screen`, `triage.classify`, `triage.draft`, `triage.store` | counts per step |
-| FastAPI middleware | `{METHOD} {route}` (SERVER) | **POST/PUT/PATCH/DELETE only**; unmatched routes are labeled `<unmatched>` |
+| `run_triage` | `triage.fetch` (+ `gmail.fetch {account}`), `triage.dedup`, `triage.screen`, `triage.classify`, `triage.draft`, `triage.store` | counts per step; `triage.classify` / `triage.draft` are ERROR when classification or any draft fails (the run itself is degraded) |
+| FastAPI middleware | `{METHOD} {route}` (SERVER) | **POST/PUT/PATCH/DELETE only**, never `/api/inngest`; unmatched routes are labeled `<unmatched>` |
 
 Cost comes from `genai-prices`, priced on the resolved model (`response_metadata.model_name`),
 falling back to the requested one. Unknown model gives `cost_usd NULL`, never an error.
@@ -58,7 +57,7 @@ Nav **Observability** (`web/app/observability/`; Runs keeps its URL under Email)
 | Traces | `/observability/traces`, `/observability/traces/[traceId]` | filterable list; detail has the waterfall, span inspector (prompt/response, tokens, cost, args/result, exceptions) and the trace's logs |
 | LLM | `/observability/llm` | spend, tokens, cache-hit, p95 latency; per model and per role; recent calls |
 | Runs | `/email/runs`, `/email/runs/[id]` | list (supports `?kind=`) and detail with the embedded trace waterfall |
-| Logs | `/observability/logs` | faceted explorer (incl. `trace_id`), live tail; lines link to their trace |
+| Logs | `/observability/logs` | explorer (level, run kind, message search), live tail; rows that carry a `trace_id` link to their trace |
 
 The browser never sees the bearer token: client polling goes through route-handler proxies
 (`web/app/api/*-proxy/`), and `lib/api.ts` is `server-only`.
@@ -92,6 +91,9 @@ A one-time startup migration scrubs secrets already in `log_entry` / `run_log`.
 `end_time`); `run_log` is kept. Pruning runs at startup and daily at 04:00 (scheduler job
 `obs-prune`). `0` = keep everything.
 
+A run's detail-page logs are read from `log_entry` (there is no per-run log blob any more),
+so they expire with `LOG_RETENTION_DAYS` too; older runs keep their row, summary and error.
+
 ## Settings
 
 | Env var | Default | Meaning |
@@ -119,6 +121,12 @@ A one-time startup migration scrubs secrets already in `log_entry` / `run_log`.
   `semconv.py`; an upstream rename is a one-file change.
 - **Only mutating API requests are traced** (GET polling would drown traces). Metrics still
   see every request.
+- **`/api/inngest` is never traced.** The Inngest dev server PUTs it every ~5 s; it is still
+  counted in metrics. Runs inside Inngest steps (`record_run`) are therefore their own root traces.
+- **Scheduler jobs are added in a detached context.** APScheduler's wakeup captures the
+  caller's contextvars and every later job run inherits them, so a job added from a request
+  or tool would make all future cron/reminder runs children of that span. Runtime
+  `add_job` calls go through `scheduler.jobs.add_job_detached`.
 - **A running run's trace appears in Traces only once its root span ends.** Until then it is
   visible only on the Runs page.
 - **`asyncio.to_thread` propagates trace context; raw threads don't.** Spans started in a bare
