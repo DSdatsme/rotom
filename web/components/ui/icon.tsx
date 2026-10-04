@@ -22,6 +22,7 @@ import {
   Waypoints,
   Sparkle,
   CircleDollarSign,
+  Timer,
   type LucideIcon,
 } from "lucide-react";
 
@@ -50,6 +51,7 @@ const ICONS: Record<string, LucideIcon> = {
   Waypoints,
   Sparkle,
   CircleDollarSign,
+  Timer,
 };
 
 export function Icon({
