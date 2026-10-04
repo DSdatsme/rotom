@@ -23,7 +23,8 @@ export default async function ObservabilityOverview({
   searchParams: Promise<{ window?: string }>;
 }) {
   const { window = "24h" } = await searchParams;
-  const win = WINDOWS[window] ?? WINDOWS["24h"];
+  const windowKey = Object.hasOwn(WINDOWS, window) ? window : "24h";
+  const win = WINDOWS[windowKey];
 
   let data;
   try {
@@ -51,7 +52,7 @@ export default async function ObservabilityOverview({
             Runs, LLM spend and errors across rotom. Every row links to its trace.
           </p>
         </div>
-        <WindowTabs param="window" value={window in WINDOWS ? window : "24h"} basePath="/observability"
+        <WindowTabs param="window" value={windowKey} basePath="/observability"
                     options={Object.entries(WINDOWS).map(([value, w]) => ({ value, label: w.label }))} />
       </div>
 

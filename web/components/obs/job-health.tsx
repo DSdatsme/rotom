@@ -26,7 +26,7 @@ export function JobHealthTable({ jobs, now }: { jobs: JobHealth[]; now: number }
         <tbody className="divide-y divide-border/60">
           {jobs.map((j) => {
             const st = j.last_status ? RUN_STATUS[j.last_status as RunStatus] : null;
-            const rate = j.runs ? Math.round((j.success / j.runs) * 100) : null;
+            const rate = j.finished ? Math.round((j.success / j.finished) * 100) : null;
             return (
               <tr key={j.kind} className="hover:bg-accent/40">
                 <td className="px-4 py-2 font-medium">

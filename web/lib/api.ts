@@ -407,6 +407,7 @@ export interface RunsBucket {
 export interface JobHealth {
   kind: string;
   runs: number;
+  finished: number;
   success: number;
   problems: number;
   p50_ms: number | null;

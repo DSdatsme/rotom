@@ -53,7 +53,8 @@ function StatsTable({ rows, first }: { rows: (LlmGroupStats & { label: string; s
 
 export default async function LlmPage({ searchParams }: { searchParams: Promise<{ window?: string }> }) {
   const { window = "7d" } = await searchParams;
-  const days = WINDOWS[window] ?? 7;
+  const windowKey = Object.hasOwn(WINDOWS, window) ? window : "7d";
+  const days = WINDOWS[windowKey];
   let data;
   try {
     data = await getLlmStats(days);
@@ -74,7 +75,7 @@ export default async function LlmPage({ searchParams }: { searchParams: Promise<
           <h1 className="text-2xl font-semibold tracking-tight">LLM</h1>
           <p className="mt-1 text-sm text-muted-foreground">Every model call: spend, tokens, latency and failures.</p>
         </div>
-        <WindowTabs param="window" value={window in WINDOWS ? window : "7d"} basePath="/observability/llm"
+        <WindowTabs param="window" value={windowKey} basePath="/observability/llm"
                     options={Object.keys(WINDOWS).map((w) => ({ value: w, label: w }))} />
       </div>
 
@@ -135,7 +136,7 @@ export default async function LlmPage({ searchParams }: { searchParams: Promise<
                     <td className="px-4 py-2 text-xs">{c.role ?? "—"}</td>
                     <td className="px-4 py-2 font-mono text-xs">{c.model ?? "—"}</td>
                     <td className="px-4 py-2 text-xs text-muted-foreground">
-                      {c.run_id ? <Link href={`/email/runs/${c.run_id}`} className="hover:underline">{c.run_kind} #{c.run_id}</Link> : "chat"}
+                      {c.run_id ? <Link href={`/email/runs/${c.run_id}`} className="hover:underline">{c.run_kind} #{c.run_id}</Link> : "ad hoc"}
                     </td>
                     <td className={`mono px-4 py-2 text-right text-xs ${c.status === "ERROR" ? "text-destructive" : ""}`}>
                       {c.status === "ERROR" ? "failed" : formatMs(c.duration_ms)}

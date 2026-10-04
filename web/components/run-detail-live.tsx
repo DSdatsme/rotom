@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { ArrowLeft, ArrowUpRight, Activity } from "lucide-react";
 import type { RunDetail, RunStatus, TraceDetail } from "@/lib/api";
 import { formatTokens, computeDuration, parseJsonlLogs, formatDateTime } from "@/lib/obs-utils";
@@ -15,12 +16,24 @@ import { formatUsd } from "@/lib/format/number";
 import { useInterval } from "@/hooks/use-interval";
 
 const POLL_INTERVAL = 4000; // ms
+const TRACE_EXPORT_DELAY = 2500; // ms — spans are batch-exported every 2 s
 
 export function RunDetailLive({ initialRun, runId, trace }: { initialRun: RunDetail; runId: string; trace: TraceDetail | null }) {
+  const router = useRouter();
   const [run, setRun] = useState<RunDetail>(initialRun);
   const [, setTick] = useState(0);
 
   const isRunning = run.status === "running";
+
+  // Rendered while running, now finished: once its spans have exported, re-render the
+  // server page so the finished trace replaces the stale one. The refreshed page's
+  // initialRun is no longer running, so this fires once per transition.
+  const justFinished = initialRun.status === "running" && !isRunning;
+  useEffect(() => {
+    if (!justFinished) return;
+    const t = setTimeout(() => router.refresh(), TRACE_EXPORT_DELAY);
+    return () => clearTimeout(t);
+  }, [justFinished, router]);
 
   const refresh = async () => {
     try {
