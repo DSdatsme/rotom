@@ -233,7 +233,8 @@ TRACE_TYPE_SQL = (
 TRACE_AGG_COLUMNS = (
     f"COUNT(*) AS span_count, SUM(operation = '{sc.OP_CHAT}') AS llm_calls, "
     "COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, "
-    "SUM(cost_usd) AS cost_usd, SUM(status = 'ERROR') AS error_count"
+    "SUM(cost_usd) AS cost_usd, SUM(status = 'ERROR') AS error_count, "
+    "MAX(run_id) AS max_run_id"  # run link when the root isn't the run (e.g. under an HTTP span)
 )
 
 # The SQL query surface (see docs/observability/QUERIES.md). Recreated on every startup
@@ -257,8 +258,8 @@ _VIEWS = {
     "v_traces": f"""
         SELECT root.trace_id, root.span_id AS root_span_id, root.name AS root_name,
                {TRACE_TYPE_SQL} AS trace_type,
-               root.start_time, root.duration_ms, root.run_id, root.status,
-               {json_attr(sc.ROTOM_RUN_STATUS, 'root.attributes')} AS run_status,
+               root.start_time, root.duration_ms, COALESCE(root.run_id, agg.max_run_id) AS run_id,
+               root.status, {json_attr(sc.ROTOM_RUN_STATUS, 'root.attributes')} AS run_status,
                agg.span_count, agg.llm_calls, agg.input_tokens, agg.output_tokens,
                agg.cost_usd, agg.error_count
         FROM span root

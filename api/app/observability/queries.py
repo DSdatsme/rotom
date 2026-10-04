@@ -136,6 +136,7 @@ def overview(hours: int, *, now: datetime | None = None) -> dict[str, Any]:
         jobs.append({
             "kind": kind,
             "runs": len(rs),
+            "finished": sum(r["status"] != "running" for r in rs),
             "success": sum(r["status"] == "success" for r in rs),
             "problems": sum(r["status"] in PROBLEM_STATUSES for r in rs),
             "p50_ms": _pct(durations, 50),
@@ -245,7 +246,7 @@ def traces(
             "trace_type": r["trace_type"],
             "start_time": _iso(r["start_time"]),
             "duration_ms": r["duration_ms"],
-            "run_id": r["run_id"],
+            "run_id": r["run_id"] if r["run_id"] is not None else a.get("max_run_id"),
             "run_status": r["run_status"],
             "status": r["status"],
             "span_count": a.get("span_count", 1),
@@ -275,7 +276,7 @@ def _log_dict(r) -> dict[str, Any]:
 
 def trace_detail(trace_id: str) -> dict[str, Any] | None:
     with get_obs_session() as s:
-        spans = s.execute(text("SELECT * FROM span WHERE trace_id = :t ORDER BY start_time ASC"),
+        spans = s.execute(text("SELECT * FROM span WHERE trace_id = :t ORDER BY start_time ASC LIMIT 5000"),
                           {"t": trace_id}).mappings().all()
         if not spans:
             return None

@@ -119,6 +119,55 @@ def test_trace_detail_with_orphan_spans(traced):
     assert queries.traces()["traces"] == []  # no root yet → not listed
 
 
+def test_trace_detail_caps_spans(traced):
+    from sqlalchemy import insert
+
+    from app.observability import queries
+    from app.store.observability import Span, get_obs_session
+
+    now = datetime.now(timezone.utc)
+    rows = [{"span_id": f"{i:016x}", "trace_id": "a" * 32, "parent_span_id": None if i == 0 else f"{0:016x}",
+             "name": f"s{i}", "start_time": now + timedelta(microseconds=i), "end_time": now,
+             "duration_ms": 0.0} for i in range(5001)]
+    with get_obs_session() as s:
+        s.execute(insert(Span), rows)
+        s.commit()
+    d = queries.trace_detail("a" * 32)
+    assert len(d["spans"]) == 5000
+    assert d["spans"][0]["name"] == "s0"
+
+
+def test_run_rooted_under_http_span_links_its_run(traced):
+    from opentelemetry.trace import SpanKind
+
+    from app.observability import queries
+    from app.observability.sink import record_run
+    from app.observability.tracing import span
+    from app.store.observability import get_obs_session
+
+    with span("POST /api/drafts/{draft_id}/regenerate", kind=SpanKind.SERVER):
+        with record_run("draft_generation", source="manual") as run:
+            pass
+    (t,) = queries.traces()["traces"]
+    assert t["trace_type"] == "http"
+    assert t["run_id"] == int(run.run_id)
+    with get_obs_session() as s:
+        row = s.execute(text("SELECT trace_type, run_id FROM v_traces")).one()
+    assert tuple(row) == ("http", int(run.run_id))
+
+
+def test_job_health_counts_finished_runs_separately(seeded):
+    from app.observability import queries
+    from app.observability.events import RunStart
+    from app.observability.sqlite_sink import SqliteSink
+
+    SqliteSink().start_run(RunStart(kind="gmail_triage", source="scheduler"))  # still running
+    jobs = {j["kind"]: j for j in queries.overview(24)["jobs"]}
+    assert jobs["gmail_triage"]["runs"] == 3
+    assert jobs["gmail_triage"]["finished"] == 2
+    assert jobs["gmail_triage"]["success"] == 1
+
+
 def test_llm_stats_groups_and_percentiles(seeded):
     from app.observability import queries
 

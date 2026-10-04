@@ -66,8 +66,10 @@ async def main() -> None:
         scheduler.shutdown(wait=False)
         from app.agent.graph import close_agent
 
-        await close_agent()
-        shutdown_tracing()  # flush pending spans
+        try:
+            await close_agent()
+        finally:
+            shutdown_tracing()  # flush pending spans
 
 
 if __name__ == "__main__":
