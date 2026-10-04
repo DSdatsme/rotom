@@ -23,6 +23,8 @@ import {
   Sparkle,
   CircleDollarSign,
   Timer,
+  Hash,
+  DatabaseZap,
   type LucideIcon,
 } from "lucide-react";
 
@@ -52,6 +54,8 @@ const ICONS: Record<string, LucideIcon> = {
   Sparkle,
   CircleDollarSign,
   Timer,
+  Hash,
+  DatabaseZap,
 };
 
 export function Icon({

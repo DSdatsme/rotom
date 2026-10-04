@@ -12,6 +12,7 @@
  */
 
 import { useState } from "react";
+import Link from "next/link";
 import { formatDateTimeSeconds, levelColor, levelBg } from "@/lib/obs-utils";
 
 export interface LogRow {
@@ -22,6 +23,8 @@ export interface LogRow {
   exc_info?: string | null;
   run_id?: string | number | null;
   kind?: string | null;
+  trace_id?: string | null;
+  span_id?: string | null;
   extra?: string | null;
 }
 
@@ -42,7 +45,7 @@ function LogsRow({ log, showLogger = true, showRunId = false }: LogsRowProps) {
       /* ignore */
     }
   }
-  const knownKeys = new Set(["ts", "level", "logger", "msg", "exc_info", "run_id", "kind", "extra"]);
+  const knownKeys = new Set(["ts", "level", "logger", "msg", "exc_info", "run_id", "kind", "trace_id", "span_id", "extra"]);
   const inlineExtra: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(log)) {
     if (!knownKeys.has(k) && v !== undefined) inlineExtra[k] = v;
@@ -79,7 +82,7 @@ function LogsRow({ log, showLogger = true, showRunId = false }: LogsRowProps) {
           {log.msg || ""}
           {hasExtra && !expanded && <span className="ml-2 text-faint text-xs">[…]</span>}
         </div>
-        {showRunId && (log.kind || log.run_id != null) && (
+        {showRunId && (log.kind || log.run_id != null || log.trace_id) && (
           <div className="shrink-0 hidden md:flex items-center gap-1.5 mt-0.5">
             {log.kind && (
               <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-brand-soft text-brand truncate max-w-[150px]">
@@ -87,6 +90,15 @@ function LogsRow({ log, showLogger = true, showRunId = false }: LogsRowProps) {
               </span>
             )}
             {log.run_id != null && <span className="text-xs text-faint font-mono">#{log.run_id}</span>}
+            {log.trace_id && (
+              <Link
+                href={`/observability/traces/${log.trace_id}`}
+                onClick={(e) => e.stopPropagation()}
+                className="text-[11px] font-mono text-brand hover:underline"
+              >
+                trace
+              </Link>
+            )}
           </div>
         )}
       </div>
