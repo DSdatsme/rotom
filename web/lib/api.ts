@@ -227,6 +227,7 @@ export interface RunLog {
   summary: string;
   external_url: string | null;
   parent_run_id: number | null;
+  trace_id: string | null;
 }
 
 export interface RunDetail extends RunLog {
@@ -237,20 +238,12 @@ export interface RunDetail extends RunLog {
   children: RunRef[];
   metrics: {
     model: string;
+    calls: number;
     input_tokens: number;
     output_tokens: number;
     avg_latency_ms: number | null;
+    cost_usd: number | null;
   }[];
-}
-
-export interface UsageAggregation {
-  day: string;
-  run_id: number | null;
-  purpose: string | null;
-  model: string;
-  input_tokens: number;
-  output_tokens: number;
-  avg_latency_ms: number | null;
 }
 
 export interface LogEntry {
@@ -262,6 +255,9 @@ export interface LogEntry {
   run_id: number | null;
   kind: string | null;
   extra: string;
+  trace_id: string | null;
+  span_id: string | null;
+  exc_info: string | null;
 }
 
 export interface LogsPage {
@@ -273,6 +269,7 @@ export interface LogsFilters {
   level?: string;
   kind?: string;
   run_id?: number;
+  trace_id?: string;
   q?: string;
   since?: string;
   until?: string;
@@ -290,14 +287,12 @@ export const getRuns = (limit = 50, opts: { source?: string; kind?: string } = {
 export const getRun = (id: string) =>
   apiFetch<RunDetail>(`/api/observability/runs/${id}`);
 
-export const getUsage = (days = 14) =>
-  apiFetch<UsageAggregation[]>(`/api/observability/usage?days=${days}`);
-
 export const getLogs = (filters: LogsFilters = {}) => {
   const params = new URLSearchParams();
   if (filters.level) params.set("level", filters.level);
   if (filters.kind) params.set("kind", filters.kind);
   if (filters.run_id != null) params.set("run_id", String(filters.run_id));
+  if (filters.trace_id) params.set("trace_id", filters.trace_id);
   if (filters.q) params.set("q", filters.q);
   if (filters.since) params.set("since", filters.since);
   if (filters.until) params.set("until", filters.until);
@@ -309,3 +304,203 @@ export const getLogs = (filters: LogsFilters = {}) => {
 
 export const triggerRun = () =>
   apiFetch<{ ok: boolean }>("/api/triage/trigger", { method: "POST" });
+
+export type SpanStatus = "UNSET" | "OK" | "ERROR";
+
+export interface SpanEvent {
+  name: string;
+  ts: string | null;
+  attributes: Record<string, unknown>;
+}
+
+export interface SpanRow {
+  span_id: string;
+  trace_id: string | null;
+  parent_span_id: string | null;
+  name: string;
+  span_kind: string;
+  start_time: string;
+  end_time: string;
+  duration_ms: number;
+  status: SpanStatus;
+  status_message: string;
+  run_id: number | null;
+  operation: string | null;
+  provider: string | null;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  reasoning_tokens: number | null;
+  cost_usd: number | null;
+  attributes: Record<string, unknown>;
+  events: SpanEvent[];
+}
+
+export interface TraceRunRef {
+  id: number;
+  kind: string;
+  source: string;
+  status: RunStatus;
+  started_at: string | null;
+  finished_at: string | null;
+  summary: string;
+  error: string;
+}
+
+export interface TraceDetail {
+  trace_id: string;
+  spans: SpanRow[];
+  logs: LogEntry[];
+  run: TraceRunRef | null;
+}
+
+export type TraceType = "run" | "chat" | "http" | "other";
+
+export interface TraceSummary {
+  trace_id: string;
+  root_span_id: string;
+  root_name: string;
+  trace_type: TraceType;
+  start_time: string;
+  duration_ms: number;
+  run_id: number | null;
+  run_status: RunStatus | null;
+  status: SpanStatus;
+  span_count: number;
+  llm_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+  error_count: number;
+}
+
+export interface TracesPage {
+  traces: TraceSummary[];
+  next_before: string | null;
+}
+
+export interface TracesFilters {
+  type?: string;
+  status?: string;
+  q?: string;
+  before?: string;
+  limit?: number;
+}
+
+export interface CostPoint {
+  bucket: string;
+  model: string;
+  cost_usd: number;
+  tokens: number;
+}
+
+export interface RunsBucket {
+  bucket: string;
+  success: number;
+  failure: number;
+  degraded: number;
+  interrupted: number;
+  running: number;
+}
+
+export interface JobHealth {
+  kind: string;
+  runs: number;
+  success: number;
+  problems: number;
+  p50_ms: number | null;
+  p95_ms: number | null;
+  avg_cost_usd: number | null;
+  last_run_id: number | null;
+  last_status: RunStatus | null;
+  last_started_at: string | null;
+  last_summary: string;
+}
+
+export type Problem =
+  | { type: "run"; ts: string; run_id: number; kind: string; status: RunStatus; summary: string; error: string; trace_id: string | null }
+  | { type: "log"; ts: string; id: number; logger: string; msg: string; run_id: number | null; trace_id: string | null };
+
+export interface Overview {
+  window_hours: number;
+  bucket: "hour" | "day";
+  buckets: string[];
+  kpis: {
+    runs: number;
+    runs_ok: number;
+    problems: number;
+    running: number;
+    llm_calls: number;
+    llm_errors: number;
+    cost_usd: number;
+    input_tokens: number;
+    output_tokens: number;
+    llm_p95_ms: number | null;
+    error_logs: number;
+  };
+  runs_series: RunsBucket[];
+  cost_series: CostPoint[];
+  jobs: JobHealth[];
+  problems: Problem[];
+}
+
+export interface LlmGroupStats {
+  calls: number;
+  errors: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  reasoning_tokens: number;
+  cost_usd: number | null;
+  p50_ms: number | null;
+  p95_ms: number | null;
+}
+
+export interface LlmCall {
+  span_id: string;
+  trace_id: string | null;
+  run_id: number | null;
+  run_kind: string | null;
+  start_time: string;
+  duration_ms: number;
+  status: SpanStatus;
+  provider: string | null;
+  model: string | null;
+  role: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  reasoning_tokens: number;
+  cost_usd: number | null;
+}
+
+export interface LlmStats {
+  days: number;
+  buckets: string[];
+  kpis: LlmGroupStats & { cache_hit_pct: number | null };
+  by_model: (LlmGroupStats & { model: string; provider: string | null })[];
+  by_role: (LlmGroupStats & { role: string })[];
+  daily: CostPoint[];
+  recent: LlmCall[];
+}
+
+export const getOverview = (hours = 24) =>
+  apiFetch<Overview>(`/api/observability/overview?hours=${hours}`);
+
+export const getTraces = (f: TracesFilters = {}) => {
+  const p = new URLSearchParams();
+  if (f.type) p.set("type", f.type);
+  if (f.status) p.set("status", f.status);
+  if (f.q) p.set("q", f.q);
+  if (f.before) p.set("before", f.before);
+  if (f.limit != null) p.set("limit", String(f.limit));
+  const qs = p.toString();
+  return apiFetch<TracesPage>(`/api/observability/traces${qs ? `?${qs}` : ""}`);
+};
+
+export const getTrace = (traceId: string) =>
+  apiFetch<TraceDetail>(`/api/observability/traces/${encodeURIComponent(traceId)}`);
+
+export const getLlmStats = (days = 7) =>
+  apiFetch<LlmStats>(`/api/observability/llm?days=${days}`);

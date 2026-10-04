@@ -207,39 +207,6 @@ class SqliteSink:
                 "metrics": metrics,
             }
 
-    def usage_by_model_day(self, days: int) -> list[dict[str, Any]]:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        with get_obs_session() as session:
-            stmt = select(
-                func.strftime('%Y-%m-%dT%H:%M:%SZ', func.min(LLMUsage.ts)).label("day"),
-                RunLog.id.label("run_id"),
-                RunLog.kind.label("purpose"),
-                LLMUsage.model,
-                func.sum(LLMUsage.input_tokens).label("in_tokens"),
-                func.sum(LLMUsage.output_tokens).label("out_tokens"),
-                func.avg(LLMUsage.latency_ms).label("avg_latency_ms"),
-            ).outerjoin(RunLog, LLMUsage.run_id == RunLog.id) \
-             .where(LLMUsage.ts >= cutoff).group_by(
-                func.strftime('%Y-%m-%d', LLMUsage.ts),
-                RunLog.id,
-                RunLog.kind,
-                LLMUsage.model
-            ).order_by(text("day DESC, run_id DESC, model ASC"))
-
-            results = []
-            for row in session.execute(stmt):
-                results.append({
-                    "day": row.day,
-                    "run_id": row.run_id,
-                    "purpose": row.purpose,
-                    "model": row.model,
-                    "input_tokens": row.in_tokens,
-                    "output_tokens": row.out_tokens,
-                    # Feature B: avg latency for this model/day/run bucket
-                    "avg_latency_ms": int(row.avg_latency_ms) if row.avg_latency_ms is not None else None,
-                })
-            return results
-
     def list_logs(
         self,
         *,

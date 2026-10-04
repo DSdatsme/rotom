@@ -15,7 +15,6 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { title: "Inbox triage", href: "/email", icon: "Inbox" },
       { title: "Drafts", href: "/email/drafts", icon: "PenLine" },
-      { title: "Runs", href: "/email/runs", icon: "History" },
     ],
   },
   {
@@ -29,7 +28,10 @@ export const NAV_SECTIONS: NavSection[] = [
   {
     label: "Observability",
     items: [
-      { title: "Usage & Metrics", href: "/observability", icon: "ChartColumn" },
+      { title: "Overview", href: "/observability", icon: "Gauge" },
+      { title: "Traces", href: "/observability/traces", icon: "Waypoints" },
+      { title: "LLM", href: "/observability/llm", icon: "Sparkle" },
+      { title: "Runs", href: "/email/runs", icon: "History" },
       { title: "Logs", href: "/observability/logs", icon: "ScrollText" },
     ],
   },
@@ -50,7 +52,8 @@ const DETAIL_BASES: Array<{
   leafHref: string;
   leafLabel: string;
 }> = [
-  { test: /^\/email\/runs\/[^/]+$/, section: "Email", leafHref: "/email/runs", leafLabel: "Runs" },
+  { test: /^\/observability\/traces\/[^/]+$/, section: "Observability", leafHref: "/observability/traces", leafLabel: "Traces" },
+  { test: /^\/email\/runs\/[^/]+$/, section: "Observability", leafHref: "/email/runs", leafLabel: "Runs" },
   { test: /^\/email\/drafts\/[^/]+$/, section: "Email", leafHref: "/email/drafts", leafLabel: "Drafts" },
   { test: /^\/email\/[^/]+$/, section: "Email", leafHref: "/email", leafLabel: "Inbox triage" },
 ];

@@ -694,13 +694,6 @@ def create_app(api_token: str) -> FastAPI:
             raise HTTPException(status_code=404, detail="Run not found")
         return run
 
-    @app.get("/api/observability/usage", dependencies=[Depends(require_auth)])
-    def get_obs_usage(days: int = 14):
-        from app.observability.sink import get_query_provider
-        return _safe_obs_read(
-            lambda: get_query_provider().usage_by_model_day(days=days), [], "usage"
-        )
-
     @app.get("/api/observability/logs", dependencies=[Depends(require_auth)])
     def get_obs_logs(
         level: str = "",
