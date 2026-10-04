@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import type { SpanRow, TraceDetail } from "@/lib/api";
 import {
   buildWaterfall,
@@ -39,6 +39,15 @@ function Waterfall({
       {rows.map(({ span, depth, offsetPct, widthPct, category }) => {
         const isErr = span.status === "ERROR";
         const color = isErr ? "var(--destructive)" : CATEGORY_STYLE[category].color;
+        const end = offsetPct + widthPct;
+        // Keep the label off the bar: after it, else before it, else inside it (bar spans the track).
+        const inside = end > 85 && offsetPct < 15;
+        const labelStyle: CSSProperties =
+          end <= 85
+            ? { left: `calc(${end}% + 4px)` }
+            : offsetPct >= 15
+              ? { right: `calc(${100 - offsetPct}% + 4px)` }
+              : { right: "4px" };
         return (
           <button
             key={span.span_id}
@@ -59,8 +68,8 @@ function Waterfall({
                 style={{ left: `${offsetPct}%`, width: `${widthPct}%`, background: color, opacity: 0.85 }}
               />
               <span
-                className="absolute top-0 font-mono text-[10px] text-muted-foreground"
-                style={{ left: `min(calc(${offsetPct + widthPct}% + 4px), calc(100% - 48px))` }}
+                className={cn("absolute top-0 font-mono text-[10px]", inside ? "text-background" : "text-muted-foreground")}
+                style={labelStyle}
               >
                 {formatMs(span.duration_ms)}
               </span>
