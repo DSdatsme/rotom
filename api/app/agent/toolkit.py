@@ -4,15 +4,58 @@ The agent can read emails/drafts and create drafts — it can NEVER send email.
 Sending happens only from the dashboard (the human-in-the-loop gate).
 """
 
+import functools
 import logging
 
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 
 from app.agent.untrusted import wrap_untrusted
 from app.store.db import Draft, DraftStatus, Email, get_session
 from app.tools.gmail.drafter import draft_reply
 
 logger = logging.getLogger(__name__)
+
+
+def traced_tool(t: BaseTool) -> BaseTool:
+    """Make every call of `t` an `execute_tool {name}` span that is *current* while the
+    tool runs, so LLM calls / runs it triggers nest under it. Schema and name unchanged."""
+    from app.observability import semconv as sc
+    from app.observability.tracing import get_tracer, set_content
+
+    def _span():
+        return get_tracer().start_as_current_span(
+            f"execute_tool {t.name}",
+            attributes={sc.OPERATION_NAME: sc.OP_EXECUTE_TOOL, sc.TOOL_NAME: t.name},
+        )
+
+    if t.coroutine is not None and not getattr(t.coroutine, "__rotom_traced__", False):
+        original_async = t.coroutine
+
+        @functools.wraps(original_async)
+        async def traced_async(*args, **kwargs):
+            with _span() as s:
+                set_content(s, sc.TOOL_CALL_ARGUMENTS, kwargs)
+                result = await original_async(*args, **kwargs)
+                set_content(s, sc.TOOL_CALL_RESULT, result)
+                return result
+
+        traced_async.__rotom_traced__ = True
+        t.coroutine = traced_async
+
+    if t.func is not None and not getattr(t.func, "__rotom_traced__", False):
+        original_sync = t.func
+
+        @functools.wraps(original_sync)
+        def traced_sync(*args, **kwargs):
+            with _span() as s:
+                set_content(s, sc.TOOL_CALL_ARGUMENTS, kwargs)
+                result = original_sync(*args, **kwargs)
+                set_content(s, sc.TOOL_CALL_RESULT, result)
+                return result
+
+        traced_sync.__rotom_traced__ = True
+        t.func = traced_sync
+    return t
 
 
 # --- inner logic (testable) ---
@@ -233,8 +276,8 @@ def work_on_issue(url: str) -> str:
     return f"Coding run triggered for {owner}/{repo} issue. Progress + PR link arrive on Telegram."
 
 
-ALL_TOOLS = [
+ALL_TOOLS = [traced_tool(t) for t in (
     run_gmail_triage, list_emails, get_email, draft_reply_tool, list_drafts,
     get_current_time, create_reminder, list_reminders, cancel_reminder,
     run_workflow, work_on_issue,
-]
+)]

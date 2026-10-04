@@ -244,3 +244,28 @@ def test_duplicate_message_id_does_not_abort_pass(session_db):
         assert s.query(Email).filter(Email.message_id == "dup").count() == 1
         assert s.query(ProcessedMessage).filter(ProcessedMessage.message_id == "dup").count() == 1
     assert len(result.new_emails) == 1
+
+
+def test_triage_emits_step_spans(session_db, traced):
+    import json
+
+    from app.observability.tracing import span
+    from tests.conftest import span_rows
+
+    fetchers = [FakeFetcher("personal", [make_email(message_id="s1")]),
+                FakeFetcher("work", RuntimeError("quota"))]
+    with span("root"):
+        run_triage(fetchers, classify_all_as("needs_reply"), fake_draft_fn)
+
+    names = [r.name for r in span_rows()]
+    for expected in ("triage.fetch", "gmail.fetch personal", "gmail.fetch work",
+                     "triage.dedup", "triage.classify", "triage.draft", "triage.store"):
+        assert expected in names
+    (fetch,) = span_rows(name="triage.fetch")
+    (root,) = span_rows(name="root")
+    assert fetch.parent_span_id == root.span_id
+    assert json.loads(fetch.attributes)["rotom.triage.fetched"] == 1
+    (failed,) = span_rows(name="gmail.fetch work")
+    assert failed.status == "ERROR"
+    (store,) = span_rows(name="triage.store")
+    assert json.loads(store.attributes)["rotom.triage.stored"] == 1

@@ -36,16 +36,28 @@ async def get_agent():
 
 
 async def run_agent(message: str, thread_id: str) -> str:
-    """Send one user message through the agent; return its final text reply."""
-    agent = await get_agent()
-    state = await agent.ainvoke(
-        {"messages": [{"role": "user", "content": message}]},
-        config={"configurable": {"thread_id": thread_id}, "recursion_limit": 25},
-    )
-    from app.llm.provider import extract_text
+    """Send one user message through the agent; return its final text reply.
 
-    final = state["messages"][-1]
-    return extract_text(final.content) or "(no reply)"
+    The whole turn is one `invoke_agent rotom` span; the agent's LLM calls and tool
+    spans nest under it."""
+    from app.llm.provider import extract_text
+    from app.observability import semconv as sc
+    from app.observability.tracing import get_tracer, set_content
+
+    agent = await get_agent()
+    with get_tracer().start_as_current_span(
+        "invoke_agent rotom",
+        attributes={sc.OPERATION_NAME: sc.OP_INVOKE_AGENT, sc.AGENT_NAME: "rotom",
+                    sc.CONVERSATION_ID: thread_id},
+    ) as turn:
+        set_content(turn, sc.INPUT_MESSAGES, [{"role": "user", "content": message}])
+        state = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": message}]},
+            config={"configurable": {"thread_id": thread_id}, "recursion_limit": 25},
+        )
+        reply = extract_text(state["messages"][-1].content) or "(no reply)"
+        set_content(turn, sc.OUTPUT_MESSAGES, [{"role": "assistant", "content": reply}])
+        return reply
 
 
 async def close_agent() -> None:
