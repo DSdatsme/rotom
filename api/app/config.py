@@ -137,10 +137,11 @@ class Settings(BaseSettings):
 
     # --- Observability ---
     observability_backends: str = "sqlite"
-    # Local log retention — entries older than this are pruned at startup.
+    # Local log retention — entries older than this are pruned at startup and daily.
     # Increase or set to 0 to keep more history. The pluggable sink seam is
     # the right place to add external shipping (e.g. Datadog, Loki) later.
     log_retention_days: int = 14
+    trace_retention_days: int = 30  # span rows older than this are pruned (0 = keep all)
     # Capture LLM prompts/responses + tool args/results on spans (truncated + redacted).
     obs_capture_content: bool = True
     obs_content_max_chars: int = 8000  # per message / payload

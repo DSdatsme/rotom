@@ -677,7 +677,7 @@ def create_app(api_token: str) -> FastAPI:
             return default
 
     @app.get("/api/observability/runs", dependencies=[Depends(require_auth)])
-    async def get_obs_runs(limit: int = 50, source: str = "", kind: str = ""):
+    def get_obs_runs(limit: int = 50, source: str = "", kind: str = ""):
         from app.observability.sink import get_query_provider
         return _safe_obs_read(
             lambda: get_query_provider().list_runs(
@@ -687,7 +687,7 @@ def create_app(api_token: str) -> FastAPI:
         )
 
     @app.get("/api/observability/runs/{run_id}", dependencies=[Depends(require_auth)])
-    async def get_obs_run(run_id: str):
+    def get_obs_run(run_id: str):
         from app.observability.sink import get_query_provider
         run = _safe_obs_read(lambda: get_query_provider().get_run(run_id), None, "run")
         if not run:
@@ -695,14 +695,14 @@ def create_app(api_token: str) -> FastAPI:
         return run
 
     @app.get("/api/observability/usage", dependencies=[Depends(require_auth)])
-    async def get_obs_usage(days: int = 14):
+    def get_obs_usage(days: int = 14):
         from app.observability.sink import get_query_provider
         return _safe_obs_read(
             lambda: get_query_provider().usage_by_model_day(days=days), [], "usage"
         )
 
     @app.get("/api/observability/logs", dependencies=[Depends(require_auth)])
-    async def get_obs_logs(
+    def get_obs_logs(
         level: str = "",
         kind: str = "",
         run_id: int | None = None,
@@ -728,6 +728,39 @@ def create_app(api_token: str) -> FastAPI:
             ),
             {"logs": [], "next_before_id": None}, "logs",
         )
+
+    @app.get("/api/observability/overview", dependencies=[Depends(require_auth)])
+    def get_obs_overview(hours: int = 24):
+        from app.observability import queries
+
+        hours = max(1, min(hours, 24 * 90))
+        return _safe_obs_read(lambda: queries.overview(hours), queries.empty_overview(hours), "overview")
+
+    @app.get("/api/observability/traces", dependencies=[Depends(require_auth)])
+    def get_obs_traces(limit: int = 50, before: str = "", type: str = "", status: str = "", q: str = ""):
+        from app.observability import queries
+
+        return _safe_obs_read(
+            lambda: queries.traces(limit=max(1, min(limit, 200)), before=before or None,
+                                   trace_type=type or None, status=status or None, q=q or None),
+            {"traces": [], "next_before": None}, "traces",
+        )
+
+    @app.get("/api/observability/traces/{trace_id}", dependencies=[Depends(require_auth)])
+    def get_obs_trace(trace_id: str):
+        from app.observability import queries
+
+        detail = _safe_obs_read(lambda: queries.trace_detail(trace_id), None, "trace")
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Trace not found")
+        return detail
+
+    @app.get("/api/observability/llm", dependencies=[Depends(require_auth)])
+    def get_obs_llm(days: int = 7):
+        from app.observability import queries
+
+        days = max(1, min(days, 90))
+        return _safe_obs_read(lambda: queries.llm_stats(days), queries.empty_llm_stats(days), "llm")
 
     @app.post("/api/triage/trigger", dependencies=[Depends(require_auth)])
     async def trigger_triage_job():

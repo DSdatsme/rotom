@@ -183,6 +183,16 @@ def reschedule_pending_reminders(scheduler: AsyncIOScheduler) -> None:
             schedule_reminder_job(scheduler, r)
 
 
+def prune_observability_job() -> None:
+    """Apply log/trace retention daily (startup prunes too). Never raises."""
+    try:
+        from app.store.observability import prune_observability
+
+        prune_observability()
+    except Exception:
+        logger.exception("Observability prune failed")
+
+
 def create_scheduler() -> AsyncIOScheduler:
     global _scheduler
     settings = get_settings()
@@ -207,6 +217,13 @@ def create_scheduler() -> AsyncIOScheduler:
         id="run-reaper",
         replace_existing=True,
         next_run_time=utcnow(),
+    )
+    scheduler.add_job(
+        prune_observability_job,
+        CronTrigger(hour=4, minute=0, timezone=settings.timezone),
+        id="obs-prune",
+        replace_existing=True,
+        misfire_grace_time=6 * 3600,
     )
     _scheduler = scheduler
     return scheduler

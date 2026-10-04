@@ -165,6 +165,7 @@ def create_all():
         ObsBase.metadata.create_all(_engine)
         _migrate(_engine)
         _prune_old_logs(_engine, settings.log_retention_days)
+        _prune_old_spans(_engine, settings.trace_retention_days)
         _SessionFactory = sessionmaker(_engine, expire_on_commit=False)
 
 
@@ -214,6 +215,78 @@ def _migrate(engine) -> None:
         from app.observability.semconv import SEMCONV_VERSION
 
         _meta_set(conn, "genai.semconv_version", SEMCONV_VERSION)
+        _create_views(conn)
+
+
+# The SQL query surface (see docs/observability/QUERIES.md). Recreated on every startup
+# so definition changes ship with the code.
+_VIEWS = {
+    "v_runs": """
+        SELECT r.id AS run_id, r.kind, r.source, r.status, r.started_at, r.finished_at,
+               (julianday(r.finished_at) - julianday(r.started_at)) * 86400000.0 AS duration_ms,
+               r.summary, r.error, r.trace_id, r.parent_run_id,
+               COALESCE(u.llm_calls, 0) AS llm_calls,
+               COALESCE(u.input_tokens, 0) AS input_tokens,
+               COALESCE(u.output_tokens, 0) AS output_tokens,
+               u.cost_usd, COALESCE(u.error_spans, 0) AS error_spans
+        FROM run_log r
+        LEFT JOIN (
+            SELECT run_id, SUM(operation = 'chat') AS llm_calls, SUM(input_tokens) AS input_tokens,
+                   SUM(output_tokens) AS output_tokens, SUM(cost_usd) AS cost_usd,
+                   SUM(status = 'ERROR') AS error_spans
+            FROM span WHERE run_id IS NOT NULL GROUP BY run_id
+        ) u ON u.run_id = r.id""",
+    "v_traces": """
+        SELECT root.trace_id, root.span_id AS root_span_id, root.name AS root_name,
+               CASE WHEN json_extract(root.attributes, '$."rotom.run.kind"') IS NOT NULL THEN 'run'
+                    WHEN root.operation = 'invoke_agent' THEN 'chat'
+                    WHEN root.span_kind = 'SERVER' THEN 'http' ELSE 'other' END AS trace_type,
+               root.start_time, root.duration_ms, root.run_id, root.status,
+               json_extract(root.attributes, '$."rotom.run.status"') AS run_status,
+               agg.span_count, agg.llm_calls, agg.input_tokens, agg.output_tokens,
+               agg.cost_usd, agg.error_count
+        FROM span root
+        JOIN (
+            SELECT trace_id, COUNT(*) AS span_count, SUM(operation = 'chat') AS llm_calls,
+                   COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                   SUM(cost_usd) AS cost_usd, SUM(status = 'ERROR') AS error_count
+            FROM span WHERE trace_id IS NOT NULL GROUP BY trace_id
+        ) agg ON agg.trace_id = root.trace_id
+        WHERE root.parent_span_id IS NULL AND root.trace_id IS NOT NULL""",
+    "v_llm_calls": """
+        SELECT s.span_id, s.trace_id, s.parent_span_id, s.run_id, r.kind AS run_kind,
+               s.start_time, s.duration_ms, s.status, s.status_message, s.provider, s.model,
+               json_extract(s.attributes, '$."rotom.llm.role"') AS role,
+               s.input_tokens, s.output_tokens, s.cache_read_tokens, s.reasoning_tokens, s.cost_usd,
+               json_extract(s.attributes, '$."gen_ai.response.finish_reasons"') AS finish_reasons,
+               json_extract(s.attributes, '$."gen_ai.input.messages"') AS input_messages,
+               json_extract(s.attributes, '$."gen_ai.output.messages"') AS output_messages
+        FROM span s LEFT JOIN run_log r ON r.id = s.run_id
+        WHERE s.operation = 'chat'""",
+    "v_tool_calls": """
+        SELECT s.span_id, s.trace_id, s.parent_span_id, s.run_id, s.start_time, s.duration_ms, s.status,
+               json_extract(s.attributes, '$."gen_ai.tool.name"') AS tool,
+               json_extract(s.attributes, '$."gen_ai.tool.call.arguments"') AS arguments,
+               json_extract(s.attributes, '$."gen_ai.tool.call.result"') AS result
+        FROM span s WHERE s.operation = 'execute_tool'""",
+    "v_errors": """
+        SELECT 'span' AS source, s.start_time AS ts, s.trace_id, s.span_id, s.run_id,
+               s.name AS what, s.status_message AS message
+        FROM span s WHERE s.status = 'ERROR'
+        UNION ALL
+        SELECT 'log', l.ts, l.trace_id, l.span_id, l.run_id, l.logger,
+               l.msg || COALESCE(char(10) || l.exc_info, '')
+        FROM log_entry l WHERE l.level IN ('ERROR', 'CRITICAL')""",
+}
+
+
+def _create_views(conn) -> None:
+    from sqlalchemy import text
+
+    for name, select_sql in _VIEWS.items():
+        conn.execute(text(f"DROP VIEW IF EXISTS {name}"))
+        conn.execute(text(f"CREATE VIEW {name} AS {select_sql}"))
 
 
 def _meta_get(conn, key: str) -> str | None:
@@ -303,18 +376,36 @@ def _backfill_llm_usage(conn) -> None:
 
 
 def _prune_old_logs(engine, retention_days: int) -> None:
-    """Delete LogEntry rows older than retention_days. Run once at startup.
-    0 means keep everything."""
+    """Delete LogEntry rows older than retention_days (0 = keep everything)."""
+    _prune(engine, LogEntry, LogEntry.ts, retention_days)
+
+
+def _prune_old_spans(engine, retention_days: int) -> None:
+    """Delete span rows older than retention_days (0 = keep everything)."""
+    _prune(engine, Span, Span.end_time, retention_days)
+
+
+def _prune(engine, model, column, retention_days: int) -> None:
+    from datetime import timedelta
+
+    from sqlalchemy import delete
+    from sqlalchemy.orm import Session
+
     if retention_days <= 0:
         return
-    from sqlalchemy import text
-    from datetime import timedelta
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
-    with engine.begin() as conn:
-        conn.execute(
-            text("DELETE FROM log_entry WHERE ts < :cutoff"),
-            {"cutoff": cutoff.isoformat()}
-        )
+    with Session(engine) as session:
+        session.execute(delete(model).where(column < cutoff))
+        session.commit()
+
+
+def prune_observability() -> None:
+    """Apply LOG_RETENTION_DAYS / TRACE_RETENTION_DAYS (startup + daily job)."""
+    if _engine is None:
+        create_all()
+    settings = get_settings()
+    _prune_old_logs(_engine, settings.log_retention_days)
+    _prune_old_spans(_engine, settings.trace_retention_days)
 
 
 @contextmanager
