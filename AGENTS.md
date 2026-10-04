@@ -57,7 +57,7 @@ api/                      # Python 3.12, uv-managed, one asyncio process
     scheduler/jobs.py     # APScheduler, SQLAlchemyJobStore, triage cron, reminder jobs
     observability/        # tracing, log schema, metrics, dashboard queries — see docs/observability/
     store/db.py           # SQLAlchemy models; apply_sqlite_pragmas() = WAL + busy_timeout
-    store/observability.py# run/usage tables (record_run seam)
+    store/observability.py# obs DB models (run_log/span/log_entry), migrations, SQL views, retention
     tools/gmail/          # client, pipeline (fetch→dedup→classify→store→digest→draft), injection
     tools/calendar/       # multi-account week-view event fetch (read-only v1; scope already covers a future write feature)
     tools/reminders/      # NL recurrence → cron

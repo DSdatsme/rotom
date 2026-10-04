@@ -67,7 +67,7 @@ The browser never sees the bearer token: client polling goes through route-handl
 
 Off by default. Set `METRICS_ENABLED=true` and restart; `GET /metrics` needs
 `Authorization: Bearer $API_TOKEN` (404 when disabled). Private registry, fed by finished
-spans and the HTTP middleware (all requests, not just mutating ones):
+spans and the HTTP middleware (all requests except `/metrics`, not just mutating ones):
 
 ```bash
 curl -s -H "Authorization: Bearer $API_TOKEN" localhost:8000/metrics | grep rotom_

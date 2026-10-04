@@ -229,10 +229,7 @@ code before acting.
       Either reuse (git fetch + reset + checkout -B) or remove before clone.
 
 ### Concurrency / data (lower-severity than the High set, same families)
-- [x] **Propagate `current_run_id` into the triage worker thread** (**not a bug**: `asyncio.to_thread` copies contextvars; verified by `test_to_thread_keeps_span_parent`) — `jobs.py:40-42`. The
-      ContextVar isn't copied across `asyncio.to_thread`, so triage LLM usage + DB logs are
-      unattributed to the run. Capture it and re-set inside the thread (or use
-      `contextvars.copy_context().run`).
+- [x] **Propagate `current_run_id` into the triage worker thread** (**not a bug**: `asyncio.to_thread` copies contextvars; verified by `test_to_thread_keeps_span_parent`) — `jobs.py:40-42`.
 - [ ] **Guard obs-DB lazy session-factory init** — `store/observability.py:102-117`.
       Check-then-act on `_SessionFactory` can race across threads → `TypeError: 'NoneType'
       not callable`. Add a lock (same pattern as a future `db.init_db` guard).
