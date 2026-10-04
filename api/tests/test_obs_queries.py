@@ -197,3 +197,14 @@ def test_read_api_endpoints(api, seeded):
     assert api.get("/api/observability/traces/" + "0" * 32, headers=AUTH).status_code == 404
     assert api.get("/api/observability/llm?days=7", headers=AUTH).json()["kpis"]["calls"] == 2
     assert api.get("/api/observability/overview").status_code == 401
+
+
+def test_views_and_queries_use_semconv_names(seeded):
+    from app.observability import semconv as sc
+    from app.store.observability import get_obs_session
+
+    with get_obs_session() as s:
+        ddl = dict(s.execute(text("SELECT name, sql FROM sqlite_master WHERE type = 'view'")).all())
+    assert sc.ROTOM_LLM_ROLE in ddl["v_llm_calls"] and sc.OP_CHAT in ddl["v_llm_calls"]
+    assert sc.TOOL_NAME in ddl["v_tool_calls"] and sc.OP_EXECUTE_TOOL in ddl["v_tool_calls"]
+    assert sc.ROTOM_RUN_KIND in ddl["v_traces"] and sc.OP_INVOKE_AGENT in ddl["v_traces"]

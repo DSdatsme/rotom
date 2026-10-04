@@ -7,6 +7,7 @@ from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 from app.config import get_settings
+from app.observability import semconv as sc
 
 
 class ObsBase(DeclarativeBase):
@@ -218,10 +219,27 @@ def _migrate(engine) -> None:
         _create_views(conn)
 
 
+def json_attr(key: str, col: str = "attributes") -> str:
+    """SQL expression extracting one span attribute; `key` must be a semconv constant."""
+    return f"json_extract({col}, '$.\"{key}\"')"
+
+
+# Shared by v_traces and queries.traces() so the trace taxonomy/aggregates live in one place.
+TRACE_TYPE_SQL = (
+    f"CASE WHEN {json_attr(sc.ROTOM_RUN_KIND, 'root.attributes')} IS NOT NULL THEN 'run' "
+    f"WHEN root.operation = '{sc.OP_INVOKE_AGENT}' THEN 'chat' "
+    "WHEN root.span_kind = 'SERVER' THEN 'http' ELSE 'other' END"
+)
+TRACE_AGG_COLUMNS = (
+    f"COUNT(*) AS span_count, SUM(operation = '{sc.OP_CHAT}') AS llm_calls, "
+    "COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+    "SUM(cost_usd) AS cost_usd, SUM(status = 'ERROR') AS error_count"
+)
+
 # The SQL query surface (see docs/observability/QUERIES.md). Recreated on every startup
 # so definition changes ship with the code.
 _VIEWS = {
-    "v_runs": """
+    "v_runs": f"""
         SELECT r.id AS run_id, r.kind, r.source, r.status, r.started_at, r.finished_at,
                (julianday(r.finished_at) - julianday(r.started_at)) * 86400000.0 AS duration_ms,
                r.summary, r.error, r.trace_id, r.parent_run_id,
@@ -231,45 +249,40 @@ _VIEWS = {
                u.cost_usd, COALESCE(u.error_spans, 0) AS error_spans
         FROM run_log r
         LEFT JOIN (
-            SELECT run_id, SUM(operation = 'chat') AS llm_calls, SUM(input_tokens) AS input_tokens,
+            SELECT run_id, SUM(operation = '{sc.OP_CHAT}') AS llm_calls, SUM(input_tokens) AS input_tokens,
                    SUM(output_tokens) AS output_tokens, SUM(cost_usd) AS cost_usd,
                    SUM(status = 'ERROR') AS error_spans
             FROM span WHERE run_id IS NOT NULL GROUP BY run_id
         ) u ON u.run_id = r.id""",
-    "v_traces": """
+    "v_traces": f"""
         SELECT root.trace_id, root.span_id AS root_span_id, root.name AS root_name,
-               CASE WHEN json_extract(root.attributes, '$."rotom.run.kind"') IS NOT NULL THEN 'run'
-                    WHEN root.operation = 'invoke_agent' THEN 'chat'
-                    WHEN root.span_kind = 'SERVER' THEN 'http' ELSE 'other' END AS trace_type,
+               {TRACE_TYPE_SQL} AS trace_type,
                root.start_time, root.duration_ms, root.run_id, root.status,
-               json_extract(root.attributes, '$."rotom.run.status"') AS run_status,
+               {json_attr(sc.ROTOM_RUN_STATUS, 'root.attributes')} AS run_status,
                agg.span_count, agg.llm_calls, agg.input_tokens, agg.output_tokens,
                agg.cost_usd, agg.error_count
         FROM span root
         JOIN (
-            SELECT trace_id, COUNT(*) AS span_count, SUM(operation = 'chat') AS llm_calls,
-                   COALESCE(SUM(input_tokens), 0) AS input_tokens,
-                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
-                   SUM(cost_usd) AS cost_usd, SUM(status = 'ERROR') AS error_count
+            SELECT trace_id, {TRACE_AGG_COLUMNS}
             FROM span WHERE trace_id IS NOT NULL GROUP BY trace_id
         ) agg ON agg.trace_id = root.trace_id
         WHERE root.parent_span_id IS NULL AND root.trace_id IS NOT NULL""",
-    "v_llm_calls": """
+    "v_llm_calls": f"""
         SELECT s.span_id, s.trace_id, s.parent_span_id, s.run_id, r.kind AS run_kind,
                s.start_time, s.duration_ms, s.status, s.status_message, s.provider, s.model,
-               json_extract(s.attributes, '$."rotom.llm.role"') AS role,
+               {json_attr(sc.ROTOM_LLM_ROLE, 's.attributes')} AS role,
                s.input_tokens, s.output_tokens, s.cache_read_tokens, s.reasoning_tokens, s.cost_usd,
-               json_extract(s.attributes, '$."gen_ai.response.finish_reasons"') AS finish_reasons,
-               json_extract(s.attributes, '$."gen_ai.input.messages"') AS input_messages,
-               json_extract(s.attributes, '$."gen_ai.output.messages"') AS output_messages
+               {json_attr(sc.RESPONSE_FINISH_REASONS, 's.attributes')} AS finish_reasons,
+               {json_attr(sc.INPUT_MESSAGES, 's.attributes')} AS input_messages,
+               {json_attr(sc.OUTPUT_MESSAGES, 's.attributes')} AS output_messages
         FROM span s LEFT JOIN run_log r ON r.id = s.run_id
-        WHERE s.operation = 'chat'""",
-    "v_tool_calls": """
+        WHERE s.operation = '{sc.OP_CHAT}'""",
+    "v_tool_calls": f"""
         SELECT s.span_id, s.trace_id, s.parent_span_id, s.run_id, s.start_time, s.duration_ms, s.status,
-               json_extract(s.attributes, '$."gen_ai.tool.name"') AS tool,
-               json_extract(s.attributes, '$."gen_ai.tool.call.arguments"') AS arguments,
-               json_extract(s.attributes, '$."gen_ai.tool.call.result"') AS result
-        FROM span s WHERE s.operation = 'execute_tool'""",
+               {json_attr(sc.TOOL_NAME, 's.attributes')} AS tool,
+               {json_attr(sc.TOOL_CALL_ARGUMENTS, 's.attributes')} AS arguments,
+               {json_attr(sc.TOOL_CALL_RESULT, 's.attributes')} AS result
+        FROM span s WHERE s.operation = '{sc.OP_EXECUTE_TOOL}'""",
     "v_errors": """
         SELECT 'span' AS source, s.start_time AS ts, s.trace_id, s.span_id, s.run_id,
                s.name AS what, s.status_message AS message

@@ -14,16 +14,11 @@ from typing import Any, Iterable
 
 from sqlalchemy import text
 
-from app.store.observability import get_obs_session
+from app.observability import semconv as sc
+from app.store.observability import TRACE_AGG_COLUMNS, TRACE_TYPE_SQL, get_obs_session, json_attr
 
 PROBLEM_STATUSES = ("failure", "degraded", "interrupted")
 RUN_STATUSES = ("success", "failure", "degraded", "interrupted", "running")
-
-_TRACE_TYPE_SQL = (
-    "CASE WHEN json_extract(attributes, '$.\"rotom.run.kind\"') IS NOT NULL THEN 'run' "
-    "WHEN operation = 'invoke_agent' THEN 'chat' "
-    "WHEN span_kind = 'SERVER' THEN 'http' ELSE 'other' END"
-)
 
 
 # --- helpers -----------------------------------------------------------------
@@ -93,7 +88,7 @@ def overview(hours: int, *, now: datetime | None = None) -> dict[str, Any]:
             "FROM run_log WHERE started_at >= :since ORDER BY id DESC"), params).mappings().all()
         llm = s.execute(text(
             "SELECT model, duration_ms, status, input_tokens, output_tokens, cost_usd, start_time "
-            "FROM span WHERE operation = 'chat' AND start_time >= :since"), params).mappings().all()
+            f"FROM span WHERE operation = '{sc.OP_CHAT}' AND start_time >= :since"), params).mappings().all()
         error_logs = s.execute(text(
             "SELECT COUNT(*) FROM log_entry WHERE level IN ('ERROR', 'CRITICAL') AND ts >= :since"),
             params).scalar_one()
@@ -105,7 +100,7 @@ def overview(hours: int, *, now: datetime | None = None) -> dict[str, Any]:
             "SELECT r.kind, r.id, r.status, r.started_at, r.summary FROM run_log r "
             "JOIN (SELECT kind, MAX(id) AS id FROM run_log GROUP BY kind) m ON m.id = r.id")).mappings().all()
         run_cost = dict(s.execute(text(
-            "SELECT run_id, SUM(cost_usd) FROM span WHERE run_id IS NOT NULL AND operation = 'chat' "
+            f"SELECT run_id, SUM(cost_usd) FROM span WHERE run_id IS NOT NULL AND operation = '{sc.OP_CHAT}' "
             "AND start_time >= :since GROUP BY run_id"), params).all())
 
     bucket_list = _buckets(since, now, bucket)
@@ -208,26 +203,27 @@ def traces(
     status: str | None = None,
     q: str | None = None,
 ) -> dict[str, Any]:
-    where = ["parent_span_id IS NULL", "trace_id IS NOT NULL"]
+    where = ["root.parent_span_id IS NULL", "root.trace_id IS NOT NULL"]
     params: dict[str, Any] = {"limit": limit + 1}
     if before:
-        where.append("start_time < :before")
+        where.append("root.start_time < :before")
         params["before"] = _db_ts(_utc(before))
     if trace_type:
-        where.append(f"{_TRACE_TYPE_SQL} = :ttype")
+        where.append(f"{TRACE_TYPE_SQL} = :ttype")
         params["ttype"] = trace_type
     if status == "error":
-        where.append("status = 'ERROR'")
+        where.append("root.status = 'ERROR'")
     elif status == "ok":
-        where.append("status != 'ERROR'")
+        where.append("root.status != 'ERROR'")
     if q:
-        where.append("name LIKE :q")
+        where.append("root.name LIKE :q")
         params["q"] = f"%{q}%"
     with get_obs_session() as s:
         roots = s.execute(text(
-            f"SELECT trace_id, span_id, name, {_TRACE_TYPE_SQL} AS trace_type, start_time, duration_ms, "
-            "run_id, status, json_extract(attributes, '$.\"rotom.run.status\"') AS run_status "
-            f"FROM span WHERE {' AND '.join(where)} ORDER BY start_time DESC LIMIT :limit"),
+            f"SELECT root.trace_id, root.span_id, root.name, {TRACE_TYPE_SQL} AS trace_type, "
+            "root.start_time, root.duration_ms, root.run_id, root.status, "
+            f"{json_attr(sc.ROTOM_RUN_STATUS, 'root.attributes')} AS run_status "
+            f"FROM span root WHERE {' AND '.join(where)} ORDER BY root.start_time DESC LIMIT :limit"),
             params).mappings().all()
         has_more = len(roots) > limit
         roots = roots[:limit]
@@ -236,9 +232,7 @@ def traces(
             ids = {f"t{i}": r["trace_id"] for i, r in enumerate(roots)}
             placeholders = ",".join(f":{k}" for k in ids)
             for a in s.execute(text(
-                "SELECT trace_id, COUNT(*) AS span_count, SUM(operation = 'chat') AS llm_calls, "
-                "COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, "
-                "SUM(cost_usd) AS cost_usd, SUM(status = 'ERROR') AS error_count "
+                f"SELECT trace_id, {TRACE_AGG_COLUMNS} "
                 f"FROM span WHERE trace_id IN ({placeholders}) GROUP BY trace_id"), ids).mappings():
                 agg[a["trace_id"]] = a
     out = []
@@ -322,12 +316,12 @@ def llm_stats(days: int, *, now: datetime | None = None) -> dict[str, Any]:
     with get_obs_session() as s:
         rows = s.execute(text(
             "SELECT s.span_id, s.trace_id, s.run_id, r.kind AS run_kind, s.start_time, s.duration_ms, "
-            "s.status, s.provider, s.model, json_extract(s.attributes, '$.\"rotom.llm.role\"') AS role, "
+            f"s.status, s.provider, s.model, {json_attr(sc.ROTOM_LLM_ROLE, 's.attributes')} AS role, "
             "COALESCE(s.input_tokens, 0) AS input_tokens, COALESCE(s.output_tokens, 0) AS output_tokens, "
             "COALESCE(s.cache_read_tokens, 0) AS cache_read_tokens, "
             "COALESCE(s.reasoning_tokens, 0) AS reasoning_tokens, s.cost_usd "
             "FROM span s LEFT JOIN run_log r ON r.id = s.run_id "
-            "WHERE s.operation = 'chat' AND s.start_time >= :since ORDER BY s.start_time DESC"),
+            f"WHERE s.operation = '{sc.OP_CHAT}' AND s.start_time >= :since ORDER BY s.start_time DESC"),
             {"since": _db_ts(since)}).mappings().all()
 
     by_model: dict[tuple, list] = defaultdict(list)
