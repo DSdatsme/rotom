@@ -5,11 +5,10 @@ import { toneDot } from "@/lib/tone";
 import { relativeTime } from "@/lib/format/datetime";
 import { normalizeTs } from "@/lib/obs-utils";
 
-export function ProblemsList({ problems }: { problems: Problem[] }) {
+export function ProblemsList({ problems, now }: { problems: Problem[]; now: number }) {
   if (problems.length === 0) {
     return <p className="px-4 py-8 text-center text-sm text-muted-foreground">Nothing failed in this window.</p>;
   }
-  const now = Date.now();
   return (
     <ul className="divide-y divide-border/60">
       {problems.map((p) => {

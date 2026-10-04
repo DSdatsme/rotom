@@ -6,11 +6,10 @@ import { relativeTime } from "@/lib/format/datetime";
 import { formatMs, formatUsd } from "@/lib/format/number";
 import { normalizeTs } from "@/lib/obs-utils";
 
-export function JobHealthTable({ jobs }: { jobs: JobHealth[] }) {
+export function JobHealthTable({ jobs, now }: { jobs: JobHealth[]; now: number }) {
   if (jobs.length === 0) {
     return <p className="px-4 py-8 text-center text-sm text-muted-foreground">No runs recorded yet.</p>;
   }
-  const now = Date.now();
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-sm">

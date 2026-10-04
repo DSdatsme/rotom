@@ -36,6 +36,8 @@ export default async function ObservabilityOverview({
       </Panel>
     );
   }
+  // eslint-disable-next-line react-hooks/purity -- server component; request-time clock
+  const now = Date.now();
   const k = data.kpis;
   const finished = k.runs - k.running;
   const successPct = finished ? Math.round((k.runs_ok / finished) * 100) : null;
@@ -78,10 +80,10 @@ export default async function ObservabilityOverview({
 
       <div className="grid gap-4 lg:grid-cols-[3fr_2fr]">
         <Panel title="Job health" sub="Per run kind, this window" noPad>
-          <JobHealthTable jobs={data.jobs} />
+          <JobHealthTable jobs={data.jobs} now={now} />
         </Panel>
         <Panel title="Recent problems" sub="Failed runs and error logs" noPad>
-          <ProblemsList problems={data.problems} />
+          <ProblemsList problems={data.problems} now={now} />
         </Panel>
       </div>
     </div>
