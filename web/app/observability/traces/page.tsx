@@ -46,6 +46,7 @@ function Pills({ items, current, keyName, search }: {
 
 export default async function TracesPage({ searchParams }: { searchParams: Promise<Search> }) {
   const search = await searchParams;
+  // eslint-disable-next-line react-hooks/purity -- server component; request-time clock
   const now = Date.now();
   let page;
   try {
