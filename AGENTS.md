@@ -55,8 +55,9 @@ api/                      # Python 3.12, uv-managed, one asyncio process
     api/routes.py         # JSON API, bearer-token auth (constant-time compare)
     channels/telegram.py  # long-poll bot; notify_owner() one-shot sender (closes httpx pool)
     scheduler/jobs.py     # APScheduler, SQLAlchemyJobStore, triage cron, reminder jobs
+    observability/        # tracing, log schema, metrics, dashboard queries — see docs/observability/
     store/db.py           # SQLAlchemy models; apply_sqlite_pragmas() = WAL + busy_timeout
-    store/observability.py# run/usage tables (record_run seam)
+    store/observability.py# obs DB models (run_log/span/log_entry), migrations, SQL views, retention
     tools/gmail/          # client, pipeline (fetch→dedup→classify→store→digest→draft), injection
     tools/calendar/       # multi-account week-view event fetch (read-only v1; scope already covers a future write feature)
     tools/reminders/      # NL recurrence → cron
@@ -106,5 +107,16 @@ cd web && npm run lint         # eslint
   serialized by a lock + idempotent inserts; don't add a fourth path that bypasses them.
 - **APScheduler timezone:** triggers must pass `timezone=settings.timezone`, else they
   default to host-local/UTC.
+- **APScheduler context leak:** a runtime `add_job` captures the caller's contextvars and every
+  later job run inherits them (a request/tool span would parent all future cron runs). Add
+  jobs at runtime via `scheduler.jobs.add_job_detached`, never `scheduler.add_job` directly.
 - **`Bot(...)` leaks httpx pools** in this long-lived process — always go through
   `notify_owner()` / `async with Bot(...)`.
+- **Logging has one format file:** every log line (stdout + `log_entry` + dashboard) is built by
+  `app/observability/log_schema.py` — change fields/redaction there, never in handlers. Noisy
+  third-party loggers are capped in `logging_setup.NOISE_LEVELS` (httpx at INFO leaks the
+  Telegram bot token via request URLs).
+- **Tracing:** wrap new units of work in `record_run(kind)` (a root span + RunLog row) or
+  `tracing.span(name)` (a step). LLM calls and agent tools are traced automatically. Spell
+  OTel/GenAI attribute names only via `app/observability/semconv.py`. Tracing is inert until
+  `init_tracing()` (tests use the `traced` fixture).

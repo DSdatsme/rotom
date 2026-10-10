@@ -7,8 +7,10 @@ testable and reusable from both the scheduler and the chat agent's run_triage to
 import logging
 from dataclasses import dataclass, field
 
+from opentelemetry.trace import Status, StatusCode
 from sqlalchemy.exc import IntegrityError
 
+from app.observability.tracing import span
 from app.store.db import Category, Draft, Email, ProcessedMessage, get_session
 
 logger = logging.getLogger(__name__)
@@ -53,27 +55,34 @@ def run_triage(fetchers, classify_fn, draft_fn, max_per_account: int = 50, *, sc
 
     # 1. Fetch (degraded-state: one account failing doesn't kill the run)
     fetched: list[dict] = []
-    logger.info("Starting email fetch across %d accounts", len(fetchers))
-    for fetcher in fetchers:
-        try:
-            logger.info("Fetching unread for account %s", fetcher.account)
-            f = fetcher.fetch_unread(max_results=max_per_account)
-            logger.info("Fetched %d emails from %s", len(f), fetcher.account)
-            fetched.extend(f)
-        except Exception as exc:  # noqa: BLE001 — degraded-state reporting by design
-            logger.exception("Fetch failed for account %s", fetcher.account)
-            result.errors[fetcher.account] = f"fetch failed: {exc}"
-    result.fetched = len(fetched)
+    with span("triage.fetch") as step:
+        logger.info("Starting email fetch across %d accounts", len(fetchers))
+        for fetcher in fetchers:
+            try:
+                with span(f"gmail.fetch {fetcher.account}", attributes={"rotom.gmail.account": fetcher.account}) as fs:
+                    logger.info("Fetching unread for account %s", fetcher.account)
+                    f = fetcher.fetch_unread(max_results=max_per_account)
+                    fs.set_attribute("rotom.triage.fetched", len(f))
+                logger.info("Fetched %d emails from %s", len(f), fetcher.account)
+                fetched.extend(f)
+            except Exception as exc:  # noqa: BLE001 — degraded-state reporting by design
+                logger.exception("Fetch failed for account %s", fetcher.account)
+                result.errors[fetcher.account] = f"fetch failed: {exc}"
+        result.fetched = len(fetched)
+        step.set_attribute("rotom.triage.fetched", len(fetched))
+        step.set_attribute("rotom.triage.account_errors", len(result.errors))
 
     # 2. Dedup against the processed-messages ledger
-    with get_session() as session:
-        seen = {
-            (p.account, p.message_id)
-            for p in session.query(ProcessedMessage).filter(
-                ProcessedMessage.message_id.in_([e["message_id"] for e in fetched] or [""])
-            )
-        }
-    new = [e for e in fetched if (e["account"], e["message_id"]) not in seen]
+    with span("triage.dedup") as step:
+        with get_session() as session:
+            seen = {
+                (p.account, p.message_id)
+                for p in session.query(ProcessedMessage).filter(
+                    ProcessedMessage.message_id.in_([e["message_id"] for e in fetched] or [""])
+                )
+            }
+        new = [e for e in fetched if (e["account"], e["message_id"]) not in seen]
+        step.set_attribute("rotom.triage.new", len(new))
     logger.info("Dedup complete: %d new un-processed emails found out of %d fetched", len(new), len(fetched))
     if not new:
         return result
@@ -82,88 +91,102 @@ def run_triage(fetchers, classify_fn, draft_fn, max_per_account: int = 50, *, sc
     quarantined_dicts: list[dict] = []
     clean_dicts: list[dict] = new
     if screen_fn is not None:
-        logger.info("Screening %d emails for prompt injections", len(new))
-        screen = screen_fn(new)  # ScreenResult(flagged, deferred)
-        quarantined_dicts = [e for e in new if e["message_id"] in screen.flagged]
-        # Deferred: judge was unavailable. Leave un-stored and un-processed so the
-        # next run re-screens them — never quarantine on "couldn't check".
-        clean_dicts = [
-            e for e in new
-            if e["message_id"] not in screen.flagged and e["message_id"] not in screen.deferred
-        ]
+        with span("triage.screen") as step:
+            logger.info("Screening %d emails for prompt injections", len(new))
+            screen = screen_fn(new)  # ScreenResult(flagged, deferred)
+            quarantined_dicts = [e for e in new if e["message_id"] in screen.flagged]
+            # Deferred: judge was unavailable. Leave un-stored and un-processed so the
+            # next run re-screens them — never quarantine on "couldn't check".
+            clean_dicts = [
+                e for e in new
+                if e["message_id"] not in screen.flagged and e["message_id"] not in screen.deferred
+            ]
 
-        logger.info("Screening complete: %d quarantined, %d deferred, %d clean",
-                    len(quarantined_dicts), len(screen.deferred), len(clean_dicts))
-        if screen.deferred:
-            logger.warning("Injection judge unavailable; deferring %d email(s) to next run", len(screen.deferred))
-            result.errors["screen"] = f"injection judge unavailable: {len(screen.deferred)} email(s) deferred to next run"
+            logger.info("Screening complete: %d quarantined, %d deferred, %d clean",
+                        len(quarantined_dicts), len(screen.deferred), len(clean_dicts))
+            if screen.deferred:
+                logger.warning("Injection judge unavailable; deferring %d email(s) to next run", len(screen.deferred))
+                result.errors["screen"] = f"injection judge unavailable: {len(screen.deferred)} email(s) deferred to next run"
 
-        if quarantined_dicts:
-            with get_session() as session:
-                for e in quarantined_dicts:
-                    flags = screen.flagged[e["message_id"]]
-                    email_row = _build_email_row(e, category=Category.SKIP, suspicious=True, urgency=0, reason="possible prompt injection: " + ", ".join(flags))
-                    try:
-                        with session.begin_nested():
-                            session.add(email_row)
-                            session.add(ProcessedMessage(account=e["account"], message_id=e["message_id"]))
-                            session.flush()
-                    except IntegrityError:
-                        logger.info("Skipping already-processed message %s (concurrent triage)", e["message_id"])
-                        continue
-                    result.quarantined.append(email_row)
-                    result.new_emails.append(email_row)
+            if quarantined_dicts:
+                with get_session() as session:
+                    for e in quarantined_dicts:
+                        flags = screen.flagged[e["message_id"]]
+                        email_row = _build_email_row(e, category=Category.SKIP, suspicious=True, urgency=0, reason="possible prompt injection: " + ", ".join(flags))
+                        try:
+                            with session.begin_nested():
+                                session.add(email_row)
+                                session.add(ProcessedMessage(account=e["account"], message_id=e["message_id"]))
+                                session.flush()
+                        except IntegrityError:
+                            logger.info("Skipping already-processed message %s (concurrent triage)", e["message_id"])
+                            continue
+                        result.quarantined.append(email_row)
+                        result.new_emails.append(email_row)
+            step.set_attribute("rotom.triage.quarantined", len(quarantined_dicts))
+            step.set_attribute("rotom.triage.deferred", len(screen.deferred))
 
     # 4. Classify (clean emails only)
     if not clean_dicts:
         logger.info("No clean emails to classify. Skipping.")
         return result
     
-    logger.info("Classifying %d clean emails", len(clean_dicts))
-    try:
-        classified = classify_fn(clean_dicts)
-    except Exception as exc:  # noqa: BLE001 — degraded-state: don't hard-fail the run
-        # Leave clean emails un-stored and un-processed so the next run retries
-        # them, rather than failing the whole pass (e.g. an LLM read timeout).
-        logger.exception("Classification failed; leaving %d emails for the next run", len(clean_dicts))
-        result.errors["classify"] = f"classification failed: {exc}"
-        return result
-    logger.info("Classification complete")
+    with span("triage.classify", attributes={"rotom.triage.emails": len(clean_dicts)}) as step:
+        logger.info("Classifying %d clean emails", len(clean_dicts))
+        try:
+            classified = classify_fn(clean_dicts)
+        except Exception as exc:  # noqa: BLE001 — degraded-state: don't hard-fail the run
+            # Leave clean emails un-stored and un-processed so the next run retries
+            # them, rather than failing the whole pass (e.g. an LLM read timeout).
+            logger.exception("Classification failed; leaving %d emails for the next run", len(clean_dicts))
+            result.errors["classify"] = f"classification failed: {exc}"
+            step.record_exception(exc)
+            step.set_status(Status(StatusCode.ERROR, "classification failed"))
+            return result
+        logger.info("Classification complete")
 
     # 5a. Generate draft bodies BEFORE opening the write transaction. LLM I/O must never
     #     run inside a held SQLite write lock — that would block every other writer
     #     (checkpointer, dashboard, scheduler) for the whole batch. (Failure degrades.)
     draft_bodies: dict[str, str] = {}
-    for e in classified:
-        if e["category"] == Category.NEEDS_REPLY:
-            try:
-                logger.info("Auto-drafting reply for needs_reply email: %s", e["message_id"])
-                draft_bodies[e["message_id"]] = draft_fn(e)
-            except Exception as exc:  # noqa: BLE001 — degrade, never lose the email
-                logger.exception("Auto-draft failed for %s", e["message_id"])
-                result.errors[f"draft:{e['message_id']}"] = f"draft failed: {exc}"
+    with span("triage.draft") as step:
+        draft_failures = 0
+        for e in classified:
+            if e["category"] == Category.NEEDS_REPLY:
+                try:
+                    logger.info("Auto-drafting reply for needs_reply email: %s", e["message_id"])
+                    draft_bodies[e["message_id"]] = draft_fn(e)
+                except Exception as exc:  # noqa: BLE001 — degrade, never lose the email
+                    logger.exception("Auto-draft failed for %s", e["message_id"])
+                    result.errors[f"draft:{e['message_id']}"] = f"draft failed: {exc}"
+                    draft_failures += 1
+        step.set_attribute("rotom.triage.drafts", len(draft_bodies))
+        if draft_failures:
+            step.set_status(Status(StatusCode.ERROR, f"{draft_failures} draft(s) failed"))
 
     # 5b. Store emails + drafts + mark processed. Each message is its own savepoint, so a
     #     concurrent triage that already inserted it (UniqueConstraint race) is skipped
     #     idempotently instead of aborting the whole pass with an IntegrityError.
-    with get_session() as session:
-        for e in classified:
-            email_row = _build_email_row(e, category=e["category"], urgency=e.get("urgency", 0), reason=e.get("reason", ""))
-            try:
-                with session.begin_nested():
-                    session.add(email_row)
-                    session.add(ProcessedMessage(account=e["account"], message_id=e["message_id"]))
-                    session.flush()
-                    body = draft_bodies.get(e["message_id"])
-                    if body is not None:
-                        session.add(Draft(email_id=email_row.id, body=body))
-            except IntegrityError:
-                logger.info("Skipping already-processed message %s (concurrent triage)", e["message_id"])
-                continue
-            result.new_emails.append(email_row)
-            if e["message_id"] in draft_bodies:
-                result.drafts_created += 1
-                result.drafted_email_ids.add(email_row.id)
+    with span("triage.store") as step:
+        with get_session() as session:
+            for e in classified:
+                email_row = _build_email_row(e, category=e["category"], urgency=e.get("urgency", 0), reason=e.get("reason", ""))
+                try:
+                    with session.begin_nested():
+                        session.add(email_row)
+                        session.add(ProcessedMessage(account=e["account"], message_id=e["message_id"]))
+                        session.flush()
+                        body = draft_bodies.get(e["message_id"])
+                        if body is not None:
+                            session.add(Draft(email_id=email_row.id, body=body))
+                except IntegrityError:
+                    logger.info("Skipping already-processed message %s (concurrent triage)", e["message_id"])
+                    continue
+                result.new_emails.append(email_row)
+                if e["message_id"] in draft_bodies:
+                    result.drafts_created += 1
+                    result.drafted_email_ids.add(email_row.id)
+        step.set_attribute("rotom.triage.stored", len(result.new_emails))
 
     return result
 

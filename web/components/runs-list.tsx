@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
@@ -15,7 +16,7 @@ import { useInterval } from "@/hooks/use-interval";
 
 const POLL_INTERVAL = 4000; // ms
 
-export function RunsList({ initialRuns }: { initialRuns: RunLog[] }) {
+export function RunsList({ initialRuns, kind = "" }: { initialRuns: RunLog[]; kind?: string }) {
   const [runs, setRuns] = useState<RunLog[]>(initialRuns);
   const [source, setSource] = useState<string>("");
   const router = useRouter();
@@ -32,6 +33,7 @@ export function RunsList({ initialRuns }: { initialRuns: RunLog[] }) {
     try {
       const qs = new URLSearchParams({ limit: "50" });
       if (source) qs.set("source", source);
+      if (kind) qs.set("kind", kind);
       const res = await fetch(`/api/runs-proxy?${qs.toString()}`);
       if (res.ok) setRuns(await res.json());
     } catch {
@@ -42,7 +44,7 @@ export function RunsList({ initialRuns }: { initialRuns: RunLog[] }) {
   useEffect(() => {
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source]);
+  }, [source, kind]);
 
   useInterval(refresh, hasRunning ? POLL_INTERVAL : null);
 
@@ -70,6 +72,12 @@ export function RunsList({ initialRuns }: { initialRuns: RunLog[] }) {
         <button className={"src-pill" + (source === "" ? " active" : "")} onClick={() => setSource("")}>
           All sources
         </button>
+        {kind && (
+          <Link href="/email/runs" className="src-pill active" aria-label={`Clear kind filter ${kind}`}>
+            kind: {kind}
+            <span className="src-pill-x"><X size={11} /></span>
+          </Link>
+        )}
         {sources.map((s) => (
           <button key={s} className={"src-pill" + (source === s ? " active" : "")} onClick={() => setSource(s)}>
             {s}
@@ -86,10 +94,10 @@ export function RunsList({ initialRuns }: { initialRuns: RunLog[] }) {
         <Panel>
           <EmptyState
             icon="History"
-            title={source ? "No runs from this source" : "No runs recorded yet"}
+            title={source || kind ? "No runs match this filter" : "No runs recorded yet"}
             body={
-              source
-                ? "Nothing matches this source filter yet."
+              source || kind
+                ? "Nothing matches the current filter yet."
                 : "Background tasks and triage runs will appear here as they execute."
             }
           />

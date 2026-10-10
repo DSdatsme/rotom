@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from sqlalchemy import select, func, text
-from app.observability.events import UsageEvent, RunResult, RunStart
-from app.store.observability import get_obs_session, RunLog, LLMUsage, RunStatus, LogEntry, utcnow
+from app.observability.events import RunResult, RunStart
+from app.observability.redact import redact
+from app.store.observability import get_obs_session, RunLog, LLMUsage, Span, RunStatus, LogEntry, utcnow
 
 
 def _as_utc(dt: datetime | None) -> datetime | None:
@@ -19,23 +20,32 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
 
 
-class SqliteSink:
-    def record_usage(self, e: UsageEvent) -> None:
-        with get_obs_session() as session:
-            usage = LLMUsage(
-                ts=e.ts,
-                run_id=int(e.run_id) if e.run_id else None,
-                provider=e.provider,
-                model=e.model,
-                role=e.role,
-                input_tokens=e.input_tokens,
-                output_tokens=e.output_tokens,
-                # Feature B: persist latency
-                latency_ms=e.latency_ms,
-            )
-            session.add(usage)
-            session.commit()
+def _log_row_event(r: LogEntry) -> dict[str, Any]:
+    """A stored log_entry row → the same event shape stdout prints (log_schema)."""
+    import json
 
+    event: dict[str, Any] = {
+        "ts": _iso(r.ts), "level": r.level, "logger": r.logger, "msg": r.msg,
+        "run_id": r.run_id, "kind": r.kind, "trace_id": r.trace_id,
+        "span_id": r.span_id, "exc_info": r.exc_info,
+    }
+    try:
+        event.update(json.loads(r.extra or "{}"))
+    except ValueError:
+        pass
+    return event
+
+
+def _render_run_logs(session, run_id: int, limit: int = 2000) -> str:
+    from app.observability.log_schema import render
+
+    rows = session.scalars(
+        select(LogEntry).where(LogEntry.run_id == run_id).order_by(LogEntry.id.asc()).limit(limit)
+    ).all()
+    return "\n".join(render(_log_row_event(r)) for r in rows)
+
+
+class SqliteSink:
     def start_run(self, run: RunStart) -> str:
         with get_obs_session() as session:
             row = RunLog(
@@ -46,6 +56,7 @@ class SqliteSink:
                 external_url=run.external_url,
                 parent_run_id=int(run.parent_run_id) if run.parent_run_id else None,
                 last_heartbeat_at=utcnow(),
+                trace_id=run.trace_id,
             )
             session.add(row)
             session.commit()
@@ -57,9 +68,8 @@ class SqliteSink:
             if run:
                 run.finished_at = utcnow()
                 run.status = result.status
-                run.summary = result.summary
-                run.error = result.error
-                run.logs = result.logs
+                run.summary = redact(result.summary)
+                run.error = redact(result.error)
                 session.commit()
 
     def heartbeat(self, run_id: str) -> None:
@@ -125,6 +135,7 @@ class SqliteSink:
                     "summary": r.summary,
                     "external_url": r.external_url,
                     "parent_run_id": r.parent_run_id,
+                    "trace_id": r.trace_id,
                 }
                 for r in rows
             ]
@@ -136,21 +147,25 @@ class SqliteSink:
                 return None
 
             stmt = select(
-                LLMUsage.model,
-                func.sum(LLMUsage.input_tokens).label("in_tokens"),
-                func.sum(LLMUsage.output_tokens).label("out_tokens"),
-                func.avg(LLMUsage.latency_ms).label("avg_latency_ms"),
-            ).where(LLMUsage.run_id == run.id).group_by(LLMUsage.model)
+                Span.model,
+                func.count().label("calls"),
+                func.sum(Span.input_tokens).label("in_tokens"),
+                func.sum(Span.output_tokens).label("out_tokens"),
+                func.avg(Span.duration_ms).label("avg_latency_ms"),
+                func.sum(Span.cost_usd).label("cost_usd"),
+            ).where(Span.run_id == run.id, Span.operation == "chat").group_by(Span.model)
 
-            metrics = []
-            for row in session.execute(stmt):
-                metrics.append({
+            metrics = [
+                {
                     "model": row.model,
-                    "input_tokens": row.in_tokens,
-                    "output_tokens": row.out_tokens,
-                    # Feature B: per-model avg latency (rounded to int, None if no data)
+                    "calls": int(row.calls),
+                    "input_tokens": int(row.in_tokens or 0),
+                    "output_tokens": int(row.out_tokens or 0),
                     "avg_latency_ms": int(row.avg_latency_ms) if row.avg_latency_ms is not None else None,
-                })
+                    "cost_usd": float(row.cost_usd) if row.cost_usd is not None else None,
+                }
+                for row in session.execute(stmt)
+            ]
 
             # Parent breadcrumb (when nested)
             parent = None
@@ -183,47 +198,15 @@ class SqliteSink:
                 "status": run.status,
                 "summary": run.summary,
                 "error": run.error,
-                "logs": run.logs,
+                "logs": run.logs or _render_run_logs(session, run.id),
                 "external_id": run.external_id,
                 "external_url": run.external_url,
                 "parent_run_id": run.parent_run_id,
+                "trace_id": run.trace_id,
                 "parent": parent,
                 "children": children,
                 "metrics": metrics,
             }
-
-    def usage_by_model_day(self, days: int) -> list[dict[str, Any]]:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        with get_obs_session() as session:
-            stmt = select(
-                func.strftime('%Y-%m-%dT%H:%M:%SZ', func.min(LLMUsage.ts)).label("day"),
-                RunLog.id.label("run_id"),
-                RunLog.kind.label("purpose"),
-                LLMUsage.model,
-                func.sum(LLMUsage.input_tokens).label("in_tokens"),
-                func.sum(LLMUsage.output_tokens).label("out_tokens"),
-                func.avg(LLMUsage.latency_ms).label("avg_latency_ms"),
-            ).outerjoin(RunLog, LLMUsage.run_id == RunLog.id) \
-             .where(LLMUsage.ts >= cutoff).group_by(
-                func.strftime('%Y-%m-%d', LLMUsage.ts),
-                RunLog.id,
-                RunLog.kind,
-                LLMUsage.model
-            ).order_by(text("day DESC, run_id DESC, model ASC"))
-
-            results = []
-            for row in session.execute(stmt):
-                results.append({
-                    "day": row.day,
-                    "run_id": row.run_id,
-                    "purpose": row.purpose,
-                    "model": row.model,
-                    "input_tokens": row.in_tokens,
-                    "output_tokens": row.out_tokens,
-                    # Feature B: avg latency for this model/day/run bucket
-                    "avg_latency_ms": int(row.avg_latency_ms) if row.avg_latency_ms is not None else None,
-                })
-            return results
 
     def list_logs(
         self,
@@ -236,6 +219,7 @@ class SqliteSink:
         until: str | None = None,
         limit: int = 100,
         before_id: int | None = None,
+        trace_id: str | None = None,
     ) -> dict[str, Any]:
         """Newest-first, id-based cursor pagination for the Logs Explorer.
 
@@ -261,6 +245,9 @@ class SqliteSink:
 
             if run_id is not None:
                 stmt = stmt.where(LogEntry.run_id == run_id)
+
+            if trace_id:
+                stmt = stmt.where(LogEntry.trace_id == trace_id)
 
             if q:
                 stmt = stmt.where(LogEntry.msg.ilike(f"%{q}%"))
@@ -299,6 +286,9 @@ class SqliteSink:
                         "run_id": r.run_id,
                         "kind": r.kind,
                         "extra": r.extra,
+                        "trace_id": r.trace_id,
+                        "span_id": r.span_id,
+                        "exc_info": r.exc_info,
                     }
                     for r in rows
                 ],

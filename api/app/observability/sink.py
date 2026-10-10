@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from typing import Protocol, Any
 
 from app.config import get_settings
-from app.observability.events import UsageEvent, RunResult, RunStart
+from app.observability.events import RunResult, RunStart
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,6 @@ current_run_kind = contextvars.ContextVar("current_run_kind", default=None)
 HEARTBEAT_INTERVAL = 60
 
 class ObservabilitySink(Protocol):
-    def record_usage(self, e: UsageEvent) -> None: ...
     def start_run(self, run: RunStart) -> str | None: ...
     def finish_run(self, run_id: str, result: RunResult) -> None: ...
     def heartbeat(self, run_id: str) -> None: ...
@@ -30,7 +29,6 @@ class QueryProvider(Protocol):
         self, limit: int, *, source: str | None = None, kind: str | None = None
     ) -> list[dict[str, Any]]: ...
     def get_run(self, run_id: str) -> dict[str, Any] | None: ...
-    def usage_by_model_day(self, days: int) -> list[dict[str, Any]]: ...
     def list_logs(
         self,
         *,
@@ -42,18 +40,12 @@ class QueryProvider(Protocol):
         until: str | None = None,
         limit: int = 100,
         before_id: int | None = None,
+        trace_id: str | None = None,
     ) -> dict[str, Any]: ...
 
 class CompositeSink:
     def __init__(self, sinks: list[ObservabilitySink]):
         self.sinks = sinks
-        
-    def record_usage(self, e: UsageEvent) -> None:
-        for s in self.sinks:
-            try:
-                s.record_usage(e)
-            except Exception as ex:
-                logger.warning(f"Sink {s.__class__.__name__} failed to record usage: {ex}")
 
     def start_run(self, run: RunStart) -> str | None:
         run_id = None
@@ -158,93 +150,80 @@ def record_run(
     sink/DB is unavailable or failing, run tracking degrades to a stdout warning
     and the wrapped body still executes (with `run_id = None`, so logs/usage
     simply aren't attributed to a run).
+
+    The run is also the root (or child) OTel span of its trace; `run_log.trace_id` links them.
     """
-    # Lazy imports: logging_setup imports current_run_id from this module.
+    from opentelemetry.trace import Status, StatusCode
+
+    from app.observability import semconv as sc
+    from app.observability.tracing import get_tracer, trace_id_of
     from app.store.observability import RunStatus
-    from app.logging_setup import _attach_buffer, _detach
 
     sink = get_sink()
+    parent = current_run_id.get()  # capture BEFORE we overwrite current_run_id
 
-    # Capture the enclosing run as our parent BEFORE we overwrite current_run_id.
-    parent = current_run_id.get()
-
-    run_id: str | None = None
-    try:
-        run_id = sink.start_run(RunStart(
-            kind=kind,
-            source=source,
-            external_id=external_id,
-            external_url=external_url,
-            parent_run_id=parent,
-        ))
-    except Exception as ex:  # pragma: no cover - defensive
-        logger.warning(f"observability: failed to start run {kind!r}: {ex}")
-
-    handler = None
-    if run_id is not None:
+    with get_tracer().start_as_current_span(
+        kind, attributes={sc.ROTOM_RUN_KIND: kind, sc.ROTOM_RUN_SOURCE: source}
+    ) as run_span:
+        run_id: str | None = None
         try:
-            handler = _attach_buffer(run_id)
-        except Exception as ex:  # pragma: no cover - defensive
-            logger.warning(f"observability: failed to attach log buffer for run {run_id}: {ex}")
-
-    token = current_run_id.set(run_id)
-    kind_token = current_run_kind.set(kind)
-    ctx = RunContext(run_id)
-
-    # Heartbeat: bump last_heartbeat_at on a daemon thread while the run is open,
-    # so the reaper can distinguish a genuinely-long run from a dead one. Stopped
-    # and joined on exit. Skipped entirely when run tracking is unavailable.
-    stop_beat = threading.Event()
-    beat_thread = None
-    if run_id is not None:
-        def _beat() -> None:
-            while not stop_beat.wait(HEARTBEAT_INTERVAL):
-                try:
-                    sink.heartbeat(run_id)
-                except Exception:  # pragma: no cover - defensive
-                    pass
-        beat_thread = threading.Thread(target=_beat, name=f"run-heartbeat-{run_id}", daemon=True)
-        beat_thread.start()
-
-    def _captured_logs() -> str:
-        if handler is None:
-            return ""
-        try:
-            return handler.text()
-        except Exception:  # pragma: no cover - defensive
-            return ""
-
-    def _finish(status: str, *, summary: str, error: str) -> None:
-        if run_id is None:
-            return
-        try:
-            sink.finish_run(run_id, RunResult(
-                status, summary=summary, error=error, logs=_captured_logs(),
+            run_id = sink.start_run(RunStart(
+                kind=kind, source=source, external_id=external_id, external_url=external_url,
+                parent_run_id=parent, trace_id=trace_id_of(run_span),
             ))
         except Exception as ex:  # pragma: no cover - defensive
-            logger.warning(f"observability: failed to finish run {run_id}: {ex}")
+            logger.warning(f"observability: failed to start run {kind!r}: {ex}")
+        if run_id is not None:
+            run_span.set_attribute(sc.ROTOM_RUN_ID, int(run_id))
 
-    try:
-        yield ctx
-    except Exception as exc:
-        _finish(RunStatus.FAILURE, summary=ctx.summary or "Failed", error=ctx.error or str(exc))
-        raise
-    else:
-        if ctx._failed:
-            status = RunStatus.FAILURE
-        elif ctx._degraded:
-            status = RunStatus.DEGRADED
-        else:
-            status = RunStatus.SUCCESS
-        _finish(status, summary=ctx.summary, error=ctx.error)
-    finally:
-        stop_beat.set()
-        if beat_thread is not None:
-            beat_thread.join(timeout=2)
-        current_run_id.reset(token)
-        current_run_kind.reset(kind_token)
-        if handler is not None:
+        token = current_run_id.set(run_id)
+        kind_token = current_run_kind.set(kind)
+        ctx = RunContext(run_id)
+
+        stop_beat = threading.Event()
+        beat_thread = None
+        if run_id is not None:
+            def _beat() -> None:
+                while not stop_beat.wait(HEARTBEAT_INTERVAL):
+                    try:
+                        sink.heartbeat(run_id)
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+            beat_thread = threading.Thread(target=_beat, name=f"run-heartbeat-{run_id}", daemon=True)
+            beat_thread.start()
+
+        def _finish(status: str, *, summary: str, error: str) -> None:
+            run_span.set_attribute(sc.ROTOM_RUN_STATUS, str(status))
+            if summary:
+                run_span.set_attribute(sc.ROTOM_RUN_SUMMARY, summary)
+            if status == RunStatus.FAILURE:
+                run_span.set_status(Status(StatusCode.ERROR, error or summary or "failed"))
+            if run_id is None:
+                return
             try:
-                _detach(handler)
-            except Exception:  # pragma: no cover - defensive
-                pass
+                from app.logging_setup import flush_db_logs
+
+                flush_db_logs()
+                sink.finish_run(run_id, RunResult(status, summary=summary, error=error))
+            except Exception as ex:  # pragma: no cover - defensive
+                logger.warning(f"observability: failed to finish run {run_id}: {ex}")
+
+        try:
+            yield ctx
+        except Exception as exc:
+            _finish(RunStatus.FAILURE, summary=ctx.summary or "Failed", error=ctx.error or str(exc))
+            raise
+        else:
+            if ctx._failed:
+                status = RunStatus.FAILURE
+            elif ctx._degraded:
+                status = RunStatus.DEGRADED
+            else:
+                status = RunStatus.SUCCESS
+            _finish(status, summary=ctx.summary, error=ctx.error)
+        finally:
+            stop_beat.set()
+            if beat_thread is not None:
+                beat_thread.join(timeout=2)
+            current_run_id.reset(token)
+            current_run_kind.reset(kind_token)

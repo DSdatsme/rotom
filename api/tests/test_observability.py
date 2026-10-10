@@ -1,20 +1,4 @@
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-
-@pytest.fixture()
-def obs_db(tmp_path):
-    """Point the observability sink at a throwaway SQLite file."""
-    from app.store import observability as obs
-
-    engine = create_engine(f"sqlite:///{tmp_path / 'obs.db'}")
-    obs.ObsBase.metadata.create_all(engine)
-    obs._engine = engine
-    obs._SessionFactory = sessionmaker(engine, expire_on_commit=False)
-    yield obs
-    obs._engine = None
-    obs._SessionFactory = None
 
 
 def test_record_run_is_running_mid_flight_then_success(obs_db):
@@ -43,6 +27,24 @@ def test_record_run_marks_failure_and_records_error_on_exception(obs_db):
     done = get_query_provider().get_run(captured["id"])
     assert done["status"] == "failure"
     assert "boom" in done["error"]
+
+
+def test_run_error_and_summary_are_redacted_before_persisting(obs_db):
+    from app.observability.sink import record_run, get_query_provider
+
+    token = "1234567890:AAAbbbCCCdddEEEfffGGGhhhIIIjjjKKKlll0"
+    captured = {}
+    with pytest.raises(RuntimeError):
+        with record_run("test_kind") as run:
+            captured["id"] = run.run_id
+            run.summary = f"called https://api.telegram.org/bot{token}/sendMessage"
+            raise RuntimeError("401 for Authorization: Bearer abcdef0123456789xyz")
+
+    done = get_query_provider().get_run(captured["id"])
+    assert "abcdef0123456789xyz" not in done["error"]
+    assert "[REDACTED]" in done["error"]
+    assert token not in done["summary"]
+    assert "[REDACTED]" in done["summary"]
 
 
 def test_record_run_fail_without_exception_marks_failure(obs_db):
@@ -176,9 +178,6 @@ def test_record_run_runs_body_when_sink_is_down(obs_db, monkeypatch):
             raise RuntimeError("db unavailable")
 
         def finish_run(self, run_id, result):
-            raise RuntimeError("db unavailable")
-
-        def record_usage(self, e):
             raise RuntimeError("db unavailable")
 
     # get_sink already wraps in CompositeSink (which isolates per-sink errors),

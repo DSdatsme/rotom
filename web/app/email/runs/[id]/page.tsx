@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 
-import { getRun } from "@/lib/api";
+import { getRun, getTrace } from "@/lib/api";
 import { RunDetailLive } from "@/components/run-detail-live";
 import { Panel } from "@/components/ui/panel";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -32,5 +32,14 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
     );
   }
 
-  return <RunDetailLive initialRun={run} runId={id} />;
+  let trace = null;
+  if (run.trace_id) {
+    try {
+      trace = await getTrace(run.trace_id);
+    } catch {
+      trace = null; // trace not exported yet (run still running) or pruned
+    }
+  }
+
+  return <RunDetailLive initialRun={run} runId={id} trace={trace} />;
 }

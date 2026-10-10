@@ -5,6 +5,7 @@ round-trips through SQLAlchemyJobStore.
 """
 
 import asyncio
+import contextvars
 import logging
 
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
@@ -23,6 +24,12 @@ _scheduler: AsyncIOScheduler | None = None
 def get_scheduler() -> AsyncIOScheduler | None:
     """The process-wide scheduler (None if not started, e.g. in tests)."""
     return _scheduler
+
+
+def add_job_detached(scheduler: AsyncIOScheduler, *args, **kwargs):
+    """add_job in an empty contextvars.Context: APScheduler's wakeup captures the caller's
+    context and every later job run inherits it — never let a request/tool span leak in."""
+    return contextvars.Context().run(scheduler.add_job, *args, **kwargs)
 
 
 async def scheduled_gmail_triage_job(source: str = "scheduler") -> None:
@@ -144,7 +151,8 @@ def schedule_reminder_job(scheduler: AsyncIOScheduler, reminder) -> None:
         trigger = CronTrigger.from_crontab(reminder.recurrence_cron, timezone=settings.timezone)
     else:
         trigger = DateTrigger(run_date=as_utc(reminder.fire_at))
-    scheduler.add_job(
+    add_job_detached(
+        scheduler,
         fire_reminder_job,
         trigger,
         args=[reminder.id],
@@ -176,11 +184,21 @@ def reschedule_pending_reminders(scheduler: AsyncIOScheduler) -> None:
             continue  # jobstore already has it (misfire grace handles late fires)
         if not r.recurrence_cron and as_utc(r.fire_at) <= now:
             logger.warning("Reminder %s missed while down; firing now", r.id)
-            scheduler.add_job(fire_reminder_job, DateTrigger(run_date=now), args=[r.id],
-                              id=f"reminder-{r.id}", replace_existing=True, misfire_grace_time=3600)
+            add_job_detached(scheduler, fire_reminder_job, DateTrigger(run_date=now), args=[r.id],
+                             id=f"reminder-{r.id}", replace_existing=True, misfire_grace_time=3600)
         else:
             logger.info("Re-registering missing job for reminder %s", r.id)
             schedule_reminder_job(scheduler, r)
+
+
+def prune_observability_job() -> None:
+    """Apply log/trace retention daily (startup prunes too). Never raises."""
+    try:
+        from app.store.observability import prune_observability
+
+        prune_observability()
+    except Exception:
+        logger.exception("Observability prune failed")
 
 
 def create_scheduler() -> AsyncIOScheduler:
@@ -207,6 +225,13 @@ def create_scheduler() -> AsyncIOScheduler:
         id="run-reaper",
         replace_existing=True,
         next_run_time=utcnow(),
+    )
+    scheduler.add_job(
+        prune_observability_job,
+        CronTrigger(hour=4, minute=0, timezone=settings.timezone),
+        id="obs-prune",
+        replace_existing=True,
+        misfire_grace_time=6 * 3600,
     )
     _scheduler = scheduler
     return scheduler
