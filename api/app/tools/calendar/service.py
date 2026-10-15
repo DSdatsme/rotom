@@ -1,7 +1,7 @@
 """Merge calendar events across all accounts into one sorted, resilient list."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -73,3 +73,27 @@ def list_events_for_range(
             continue
     events.sort(key=_sort_key)
     return events, errors
+
+
+def format_daily_brief(events: list[dict], errors: list[dict], today: date) -> str:
+    """Plain-text daily brief for Telegram: today's events in the order given (callers
+    pass output straight from list_events_for_range, already chronologically sorted).
+    All-day events render without a time prefix. A non-empty errors list appends one
+    terse footnote — never the raw per-account error text, which is dashboard-appropriate
+    detail, not Telegram brevity."""
+    header = f"📅 Today — {today:%a %b} {today.day}"
+    if not events:
+        body = "Nothing on the calendar today."
+    else:
+        lines = []
+        for ev in events:
+            if ev["all_day"]:
+                lines.append(f"{ev['title']} [{ev['account']}]")
+            else:
+                lines.append(f"{ev['start'][11:16]} {ev['title']} [{ev['account']}]")
+        body = "\n".join(lines)
+    text = f"{header}\n\n{body}"
+    if errors:
+        n = len(errors)
+        text += f"\n\n⚠ {n} account{'s' if n != 1 else ''} unavailable"
+    return text
