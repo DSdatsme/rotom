@@ -129,8 +129,9 @@ async def fire_reminder_job(reminder_id: int) -> None:
 def reap_interrupted_runs_job() -> None:
     """Flip zombie `running` RunLog rows (process died mid-run) to `interrupted`.
 
-    Runs every few minutes and once at startup. Inngest runs are excluded (they
-    resume on their own). Observability maintenance must never raise.
+    Runs every few minutes and once at startup. Inngest runs are included: their
+    record_run lives inside one step, so an Inngest retry opens a new row rather than
+    resuming a dead one. Observability maintenance must never raise.
     """
     try:
         from app.observability.sqlite_sink import SqliteSink

@@ -98,6 +98,9 @@ def record_failure(kind: str):
     run under the failed run's id, so failures outside a recorded step (a fetch, a send)
     still reach the Runs page and the weekly retro."""
     async def on_failure(ctx: inngest.Context) -> None:
+        # ctx.event is Inngest's "inngest/function.failed" system event; per its docs the
+        # data carries function_id, run_id (the failed run), error {name, message, stack}
+        # and the original event. Read defensively: the SDK itself doesn't type it.
         data = ctx.event.data or {}
         err = data.get("error")
         message = err.get("message") if isinstance(err, dict) else err

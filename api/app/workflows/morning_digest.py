@@ -19,6 +19,15 @@ _settings = get_settings()
     on_failure=record_failure("morning_digest"),
 )
 async def morning_digest(ctx: inngest.Context) -> str:
+    if not get_settings().telegram_enabled:
+        # Nobody would see the summary: record the skipped run, spend no LLM call.
+        async def record_skipped() -> str:
+            with inngest_run("morning_digest", ctx.run_id) as run:
+                run.degrade(summary="skipped: telegram off")
+            return "skipped: telegram off"
+
+        return await ctx.step.run("skip", record_skipped)
+
     async def fetch() -> str:
         return await run_script("top_hn.py")
 

@@ -16,6 +16,10 @@ from app.workflows.lib import deliver, inngest_run
 _settings = get_settings()
 
 
+def _plural(n: int, noun: str) -> str:
+    return f"{n} {noun}{'' if n == 1 else 's'}"
+
+
 async def send_daily_brief(run_key: str | None, *, now: datetime | None = None) -> str:
     """Fetch today's events, format the brief and send it, as one recorded run.
 
@@ -39,10 +43,10 @@ async def send_daily_brief(run_key: str | None, *, now: datetime | None = None) 
         sent = await deliver(text)
 
         error = "; ".join(f"{e['account']}: {e['message']}" for e in errors)
-        notes = [f"{len(errors)} accounts failed"] if errors else []
+        notes = [_plural(len(errors), "account") + " failed"] if errors else []
         if not sent:
             notes.append("not sent (telegram off)")
-        summary = " · ".join([f"{len(events)} events", *notes])
+        summary = " · ".join([_plural(len(events), "event"), *notes])
         if not accounts:
             run.fail(summary="no calendar accounts connected")
         elif errors and len(errors) == len(accounts):

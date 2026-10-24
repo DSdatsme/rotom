@@ -80,6 +80,12 @@ _RUN_BUCKETS = {
 # as a failure; a more recent one is still in flight and isn't counted yet.
 CODING_RUN_STALE_AFTER = timedelta(hours=24)
 
+_CODING_BUCKETS = {
+    CodingStatus.DONE: "success",
+    CodingStatus.BLOCKED: "degraded",  # PR open, CI still red after the fix rounds
+    CodingStatus.FAILED: "failure",
+}
+
 
 def _as_utc(value: datetime | None) -> datetime | None:
     if value is None:
@@ -100,7 +106,12 @@ def workflow_run_stats(since: datetime, *, now: datetime | None = None) -> dict[
     of an Inngest run writes its own row, so rows sharing an external_id (the Inngest run
     id) collapse to one run whose status is the latest row's; rows without one count
     individually. A run whose latest row is still RUNNING is in flight — e.g. the
-    weekly_retro run calling this — and isn't counted."""
+    weekly_retro run calling this — and isn't counted.
+
+    Coding runs count in the window where they settle, so consecutive windows cover each
+    run exactly once: a final state (DONE/BLOCKED/FAILED) when it was last updated, a run
+    stuck RUNNING/REVIEW as a failure once `CODING_RUN_STALE_AFTER` has passed since its
+    last update. One still in flight at retro time is counted the week it settles."""
     now = now or datetime.now(timezone.utc)
     stats: dict[str, dict] = {}
 
@@ -126,21 +137,19 @@ def workflow_run_stats(since: datetime, *, now: datetime | None = None) -> dict[
         if status != RunStatus.RUNNING:
             _bump(kind, _RUN_BUCKETS.get(status, "failure"))
 
+    since = _as_utc(since)
     with get_session() as s:
         rows = s.query(CodingRun.status, CodingRun.updated_at).filter(
-            CodingRun.created_at >= since
+            CodingRun.updated_at >= since - CODING_RUN_STALE_AFTER
         ).all()
     for status, updated_at in rows:
-        if status == CodingStatus.DONE:
-            _bump("code_issue", "success")
-        elif status == CodingStatus.BLOCKED:
-            _bump("code_issue", "degraded")  # PR open, CI still red after the fix rounds
-        elif status == CodingStatus.FAILED:
-            _bump("code_issue", "failure")
-        else:  # RUNNING / REVIEW: in flight, or died before reaching a final state
-            updated = _as_utc(updated_at)
-            if updated is None or updated < now - CODING_RUN_STALE_AFTER:
-                _bump("code_issue", "failure")
+        updated = _as_utc(updated_at)
+        if status in _CODING_BUCKETS:
+            settled_at = updated
+        else:  # RUNNING / REVIEW: died before reaching a final state once it's stale
+            settled_at = updated + CODING_RUN_STALE_AFTER
+        if since <= settled_at < now:
+            _bump("code_issue", _CODING_BUCKETS.get(status, "failure"))
 
     return stats
 

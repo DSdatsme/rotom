@@ -125,9 +125,9 @@ class TestWorkflowRunStats:
 
         with get_session() as s:
             s.add(CodingRun(issue_url="u", repo="r", issue_number=1, status=CodingStatus.DONE,
-                             created_at=NOW - timedelta(days=1)))
+                             created_at=NOW - timedelta(days=1), updated_at=NOW - timedelta(days=1)))
             s.add(CodingRun(issue_url="u", repo="r", issue_number=2, status=CodingStatus.FAILED,
-                             created_at=TWO_WEEKS_AGO))  # outside window
+                             created_at=TWO_WEEKS_AGO, updated_at=TWO_WEEKS_AGO))  # outside window
 
         stats = workflow_run_stats(WEEK_AGO)
         assert stats["morning_digest"] == {"count": 2, "success": 1, "failure": 1, "degraded": 0}
@@ -191,20 +191,44 @@ class TestWorkflowRunStats:
         assert stats["daily_calendar_brief"] == {"count": 1, "success": 0, "failure": 1, "degraded": 0}
 
     def test_coding_runs_map_final_states_and_skip_ones_still_in_flight(self, session_db, obs_db):
-        stale = NOW - timedelta(hours=30)
+        hour_ago, stale = NOW - timedelta(hours=1), NOW - timedelta(hours=30)
         with get_session() as s:
             for number, status, updated in [
-                (1, CodingStatus.DONE, NOW), (2, CodingStatus.BLOCKED, NOW),
-                (3, CodingStatus.FAILED, NOW),
-                (4, CodingStatus.RUNNING, NOW - timedelta(hours=1)),  # in flight: not counted
+                (1, CodingStatus.DONE, hour_ago), (2, CodingStatus.BLOCKED, hour_ago),
+                (3, CodingStatus.FAILED, hour_ago),
+                (4, CodingStatus.RUNNING, hour_ago),  # in flight: not counted yet
                 (5, CodingStatus.RUNNING, stale),  # died without a final state
                 (6, CodingStatus.REVIEW, stale),
+                (7, CodingStatus.DONE, TWO_WEEKS_AGO),  # settled before the window
             ]:
                 s.add(CodingRun(issue_url="u", repo="r", issue_number=number, status=status,
-                                created_at=NOW - timedelta(days=2), updated_at=updated))
+                                created_at=TWO_WEEKS_AGO, updated_at=updated))
 
         stats = workflow_run_stats(WEEK_AGO, now=NOW)
         assert stats["code_issue"] == {"count": 5, "success": 1, "failure": 3, "degraded": 1}
+
+    def test_a_coding_run_in_flight_at_retro_time_is_counted_the_next_week(self, session_db, obs_db):
+        """A run that dies the evening before a retro is "in flight" for that retro; it must
+        land in the following week's retro, not fall between the two windows."""
+        retro = NOW
+        with get_session() as s:
+            s.add(CodingRun(issue_url="u", repo="r", issue_number=1, status=CodingStatus.RUNNING,
+                            created_at=retro - timedelta(hours=22),
+                            updated_at=retro - timedelta(hours=21)))
+
+        this_week = workflow_run_stats(retro - timedelta(days=7), now=retro)
+        next_week = workflow_run_stats(retro, now=retro + timedelta(days=7))
+        assert "code_issue" not in this_week
+        assert next_week["code_issue"] == {"count": 1, "success": 0, "failure": 1, "degraded": 0}
+
+    def test_a_coding_run_finished_this_week_counts_even_if_started_earlier(self, session_db, obs_db):
+        with get_session() as s:
+            s.add(CodingRun(issue_url="u", repo="r", issue_number=1, status=CodingStatus.DONE,
+                            created_at=WEEK_AGO - timedelta(hours=2),
+                            updated_at=NOW - timedelta(days=6)))
+
+        stats = workflow_run_stats(WEEK_AGO, now=NOW)
+        assert stats["code_issue"]["success"] == 1
 
     def test_unreadable_observability_db_returns_none(self, session_db, obs_db, monkeypatch):
         import app.tools.retro.service as retro

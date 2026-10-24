@@ -65,3 +65,30 @@ def test_cron_fires_at_local_time():
 def test_workflow_registered():
     from app.workflows.registry import WORKFLOW_FUNCTIONS
     assert wf.weekly_retro in WORKFLOW_FUNCTIONS
+
+
+def test_window_uses_wall_clock_days_across_a_dst_change():
+    # New York falls back on 2026-11-01. The Sunday 18:00 run that day (23:00Z) must reach
+    # back to the previous Sunday's 18:00 EDT run (22:00Z), not to 23:00Z, which is 7×24h.
+    this_week = datetime(2026, 11, 1, 23, 0, 0, 500000, tzinfo=timezone.utc)
+    last_week = datetime(2026, 10, 25, 22, 0, 0, 900000, tzinfo=timezone.utc)
+    since = wf.retro_window_start(this_week, "America/New_York")
+    assert since == datetime(2026, 10, 25, 22, 0, tzinfo=timezone.utc)
+    assert last_week >= since
+
+
+def test_inngest_wiring_runs_the_step_under_the_run_id(session_db, obs_db, sent):
+    import inngest
+    from inngest.experimental import mocked
+
+    res = mocked.trigger(
+        wf.weekly_retro, inngest.Event(name="workflows/weekly-retro.requested"),
+        mocked.Inngest(app_id="test"),
+    )
+
+    assert res.status == mocked.Status.COMPLETED
+    assert res.output == "sent"
+    assert len(sent) == 1
+    with get_obs_session() as s:
+        row = s.query(RunLog).filter(RunLog.kind == "weekly_retro").one()
+    assert row.external_id == "test"  # the mocked run id

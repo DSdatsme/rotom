@@ -139,3 +139,29 @@ def test_cron_fires_at_local_time():
 def test_workflow_registered():
     from app.workflows.registry import WORKFLOW_FUNCTIONS
     assert wf.daily_calendar_brief in WORKFLOW_FUNCTIONS
+
+
+async def test_run_summary_pluralizes(obs_db, sent, monkeypatch):
+    _accounts(monkeypatch, _FakeAccount("work", [_event("Standup", "2026-07-29T09:00:00+05:30",
+                                                         "2026-07-29T09:30:00+05:30")]),
+              _FakeAccount("personal", error=RuntimeError("x")))
+
+    await wf.send_daily_brief("r", now=NOW)
+
+    assert _run_row().summary == "1 event · 1 account failed"
+
+
+def test_inngest_wiring_runs_the_step_under_the_run_id(obs_db, sent, monkeypatch):
+    import inngest
+    from inngest.experimental import mocked
+
+    _accounts(monkeypatch, _FakeAccount("work"))
+    res = mocked.trigger(
+        wf.daily_calendar_brief, inngest.Event(name="workflows/daily-calendar-brief.requested"),
+        mocked.Inngest(app_id="test"),
+    )
+
+    assert res.status == mocked.Status.COMPLETED
+    assert res.output == "sent"
+    assert len(sent) == 1
+    assert _run_row().external_id == "test"  # the mocked run id
