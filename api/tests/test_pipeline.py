@@ -244,3 +244,63 @@ def test_duplicate_message_id_does_not_abort_pass(session_db):
         assert s.query(Email).filter(Email.message_id == "dup").count() == 1
         assert s.query(ProcessedMessage).filter(ProcessedMessage.message_id == "dup").count() == 1
     assert len(result.new_emails) == 1
+
+
+def test_triage_emits_step_spans(session_db, traced):
+    import json
+
+    from app.observability.tracing import span
+    from tests.conftest import span_rows
+
+    fetchers = [FakeFetcher("personal", [make_email(message_id="s1")]),
+                FakeFetcher("work", RuntimeError("quota"))]
+    with span("root"):
+        run_triage(fetchers, classify_all_as("needs_reply"), fake_draft_fn)
+
+    names = [r.name for r in span_rows()]
+    for expected in ("triage.fetch", "gmail.fetch personal", "gmail.fetch work",
+                     "triage.dedup", "triage.classify", "triage.draft", "triage.store"):
+        assert expected in names
+    (fetch,) = span_rows(name="triage.fetch")
+    (root,) = span_rows(name="root")
+    assert fetch.parent_span_id == root.span_id
+    assert json.loads(fetch.attributes)["rotom.triage.fetched"] == 1
+    (failed,) = span_rows(name="gmail.fetch work")
+    assert failed.status == "ERROR"
+    (store,) = span_rows(name="triage.store")
+    assert json.loads(store.attributes)["rotom.triage.stored"] == 1
+
+
+def test_classify_failure_marks_classify_span_error(session_db, traced):
+    from tests.conftest import span_rows
+
+    def broken_classify(emails):
+        raise RuntimeError("read operation timed out")
+
+    run_triage([FakeFetcher("personal", [make_email(message_id="c1")])], broken_classify, fake_draft_fn)
+    (step,) = span_rows(name="triage.classify")
+    assert step.status == "ERROR"
+    assert step.status_message == "classification failed"
+    assert "exception" in step.events
+
+
+def test_draft_failure_marks_draft_span_error(session_db, traced):
+    from tests.conftest import span_rows
+
+    def broken_draft(email):
+        raise RuntimeError("LLM down")
+
+    emails = [make_email(message_id="d1"), make_email(message_id="d2")]
+    run_triage([FakeFetcher("personal", emails)], classify_all_as("needs_reply"), broken_draft)
+    (step,) = span_rows(name="triage.draft")
+    assert step.status == "ERROR"
+    assert step.status_message == "2 draft(s) failed"
+
+
+def test_successful_draft_step_is_not_error(session_db, traced):
+    from tests.conftest import span_rows
+
+    run_triage([FakeFetcher("personal", [make_email(message_id="ok1")])],
+               classify_all_as("needs_reply"), fake_draft_fn)
+    (step,) = span_rows(name="triage.draft")
+    assert step.status != "ERROR"

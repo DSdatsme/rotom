@@ -1,23 +1,6 @@
 """Tests for Feature A (LogEntry/list_logs) and Feature B (latency_ms)."""
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-
-@pytest.fixture()
-def obs_db(tmp_path):
-    """Fresh observability DB per test with migrations applied."""
-    from app.store import observability as obs
-
-    engine = create_engine(f"sqlite:///{tmp_path / 'obs.db'}")
-    obs.ObsBase.metadata.create_all(engine)
-    obs._migrate(engine)
-    obs._engine = engine
-    obs._SessionFactory = sessionmaker(engine, expire_on_commit=False)
-    yield obs
-    obs._engine = None
-    obs._SessionFactory = None
 
 
 # ---------------------------------------------------------------------------
@@ -214,133 +197,6 @@ def test_list_logs_no_next_before_id_when_all_fit(obs_db):
 
 
 # ---------------------------------------------------------------------------
-# Feature B: latency_ms on LLMUsage + UsageEvent
-# ---------------------------------------------------------------------------
-
-def test_usage_event_carries_latency(obs_db):
-    from app.observability.events import UsageEvent
-    from datetime import datetime, timezone
-
-    e = UsageEvent(
-        provider="test",
-        model="m",
-        role="draft",
-        input_tokens=10,
-        output_tokens=5,
-        run_id=None,
-        ts=datetime.now(timezone.utc),
-        latency_ms=320,
-    )
-    assert e.latency_ms == 320
-
-
-def test_usage_event_latency_defaults_to_none(obs_db):
-    from app.observability.events import UsageEvent
-    from datetime import datetime, timezone
-
-    e = UsageEvent(
-        provider="test",
-        model="m",
-        role="draft",
-        input_tokens=10,
-        output_tokens=5,
-        run_id=None,
-        ts=datetime.now(timezone.utc),
-    )
-    assert e.latency_ms is None
-
-
-def test_sqlite_sink_persists_latency(obs_db):
-    from app.observability.sqlite_sink import SqliteSink
-    from app.observability.events import UsageEvent
-    from app.store.observability import LLMUsage, get_obs_session
-    from datetime import datetime, timezone
-
-    sink = SqliteSink()
-    e = UsageEvent(
-        provider="test",
-        model="test-model",
-        role="draft",
-        input_tokens=100,
-        output_tokens=50,
-        run_id=None,
-        ts=datetime.now(timezone.utc),
-        latency_ms=450,
-    )
-    sink.record_usage(e)
-
-    with get_obs_session() as s:
-        row = s.query(LLMUsage).first()
-        assert row.latency_ms == 450
-
-
-def test_sqlite_sink_latency_none_is_stored_as_null(obs_db):
-    from app.observability.sqlite_sink import SqliteSink
-    from app.observability.events import UsageEvent
-    from app.store.observability import LLMUsage, get_obs_session
-    from datetime import datetime, timezone
-
-    sink = SqliteSink()
-    e = UsageEvent(
-        provider="test",
-        model="test-model",
-        role="draft",
-        input_tokens=10,
-        output_tokens=5,
-        run_id=None,
-        ts=datetime.now(timezone.utc),
-        latency_ms=None,
-    )
-    sink.record_usage(e)
-
-    with get_obs_session() as s:
-        row = s.query(LLMUsage).first()
-        assert row.latency_ms is None
-
-
-def test_get_run_includes_avg_latency_in_metrics(obs_db):
-    from app.observability.sqlite_sink import SqliteSink
-    from app.observability.events import UsageEvent, RunStart
-    from datetime import datetime, timezone
-
-    sink = SqliteSink()
-    run_id = sink.start_run(RunStart(kind="test"))
-
-    # Add two usages with different latencies for same model
-    for lat in (100, 200):
-        sink.record_usage(UsageEvent(
-            provider="test", model="m1", role="draft",
-            input_tokens=10, output_tokens=5,
-            run_id=run_id, ts=datetime.now(timezone.utc),
-            latency_ms=lat,
-        ))
-
-    result = sink.get_run(run_id)
-    assert result is not None
-    metric = result["metrics"][0]
-    assert metric["avg_latency_ms"] == 150  # (100+200)/2
-
-
-def test_usage_by_model_day_includes_avg_latency(obs_db):
-    from app.observability.sqlite_sink import SqliteSink
-    from app.observability.events import UsageEvent
-    from datetime import datetime, timezone
-
-    sink = SqliteSink()
-    for lat in (200, 400):
-        sink.record_usage(UsageEvent(
-            provider="test", model="m1", role="draft",
-            input_tokens=10, output_tokens=5,
-            run_id=None, ts=datetime.now(timezone.utc),
-            latency_ms=lat,
-        ))
-
-    results = sink.usage_by_model_day(days=1)
-    assert len(results) == 1
-    assert results[0]["avg_latency_ms"] == 300
-
-
-# ---------------------------------------------------------------------------
 # Feature A: DbLogHandler robustness
 # ---------------------------------------------------------------------------
 
@@ -430,6 +286,102 @@ def test_db_log_handler_batch_flush(obs_db):
     assert count == 5
 
 
+def _log_record(msg: str):
+    import logging
+
+    return logging.LogRecord(name="app.test", level=logging.INFO, pathname="", lineno=0,
+                             msg=msg, args=(), exc_info=None)
+
+
+def _persisted_msgs() -> set[str]:
+    from app.store.observability import LogEntry, get_obs_session
+
+    with get_obs_session() as s:
+        return {e.msg for e in s.query(LogEntry).all()}
+
+
+def _blocking_persist(handler):
+    """Patch handler._persist so the first flush blocks until `release` is set."""
+    import threading
+
+    in_persist, release = threading.Event(), threading.Event()
+    real_persist = handler._persist
+
+    def persist(records):
+        if not in_persist.is_set():
+            in_persist.set()
+            handler.emit(_log_record("emitted by the flushing thread"))  # own re-entry: dropped
+            release.wait(timeout=5)
+        real_persist(records)
+
+    handler._persist = persist
+    return in_persist, release
+
+
+def test_db_log_handler_keeps_other_threads_records_during_a_flush(obs_db):
+    import threading
+
+    from app.logging_setup import DbLogHandler
+
+    handler = DbLogHandler()
+    try:
+        in_persist, release = _blocking_persist(handler)
+        handler.emit(_log_record("first"))
+        flusher = threading.Thread(target=handler._flush)
+        flusher.start()
+        assert in_persist.wait(timeout=5)
+        other = threading.Thread(target=lambda: handler.emit(_log_record("from another thread")))
+        other.start()
+        other.join()
+        release.set()
+        flusher.join()
+        handler._flush()
+        msgs = _persisted_msgs()
+        assert {"first", "from another thread"} <= msgs
+        assert "emitted by the flushing thread" not in msgs
+    finally:
+        handler.close()
+
+
+def test_flush_db_logs_waits_for_an_in_progress_flush(obs_db, monkeypatch):
+    import threading
+
+    from app import logging_setup
+
+    handler = logging_setup.DbLogHandler()
+    monkeypatch.setattr(logging_setup, "_db_log_handler", handler)
+    try:
+        in_persist, release = _blocking_persist(handler)
+        handler.emit(_log_record("first"))
+        flusher = threading.Thread(target=handler._flush)
+        flusher.start()
+        assert in_persist.wait(timeout=5)
+        handler.emit(_log_record("run's last line"))
+        threading.Timer(0.2, release.set).start()
+        logging_setup.flush_db_logs()
+        assert {"first", "run's last line"} <= _persisted_msgs()
+        flusher.join()
+    finally:
+        handler.close()
+
+
+def test_size_triggered_flush_does_not_block_while_another_flush_runs(obs_db):
+    from app.logging_setup import _DB_FLUSH_EVERY, DbLogHandler
+
+    handler = DbLogHandler()
+    try:
+        handler._flush_lock.acquire()
+        try:
+            for i in range(_DB_FLUSH_EVERY + 5):
+                handler.emit(_log_record(f"burst {i}"))  # must return, not wait for the lock
+        finally:
+            handler._flush_lock.release()
+        handler._flush()
+        assert {f"burst {i}" for i in range(_DB_FLUSH_EVERY + 5)} <= _persisted_msgs()
+    finally:
+        handler.close()
+
+
 # ---------------------------------------------------------------------------
 # Feature A: log retention
 # ---------------------------------------------------------------------------
@@ -470,61 +422,3 @@ def test_prune_with_zero_retention_keeps_all(obs_db):
     with get_obs_session() as s:
         count = s.query(LogEntry).count()
     assert count == 1
-
-
-# ---------------------------------------------------------------------------
-# Feature B: UsageCallback latency tracking
-# ---------------------------------------------------------------------------
-
-def test_usage_callback_tracks_latency(obs_db):
-    """UsageCallback.on_llm_start + on_llm_end should produce a latency_ms > 0."""
-    import uuid
-    from unittest.mock import MagicMock, patch
-    from app.llm.provider import UsageCallback
-    from app.observability.events import UsageEvent
-
-    captured: list[UsageEvent] = []
-
-    cb = UsageCallback(provider="test", model="m", role="draft")
-    lc_run_id = uuid.uuid4()
-
-    # Simulate start
-    cb.on_llm_start({}, [], run_id=lc_run_id)
-
-    import time
-    time.sleep(0.01)  # ensure some time passes
-
-    # Build a minimal LLMResult
-    from langchain_core.outputs import LLMResult
-    result = LLMResult(generations=[], llm_output={})
-
-    with patch("app.llm.provider.get_sink") as mock_sink:
-        sink_instance = MagicMock()
-        mock_sink.return_value = sink_instance
-        cb.on_llm_end(result, run_id=lc_run_id)
-
-    call_args = sink_instance.record_usage.call_args
-    assert call_args is not None
-    event: UsageEvent = call_args[0][0]
-    assert event.latency_ms is not None
-    assert event.latency_ms >= 10  # at least 10ms since we slept 10ms
-
-
-def test_usage_callback_latency_none_without_start(obs_db):
-    """If on_llm_start was never called, latency_ms should be None."""
-    import uuid
-    from unittest.mock import MagicMock, patch
-    from app.llm.provider import UsageCallback
-    from app.observability.events import UsageEvent
-    from langchain_core.outputs import LLMResult
-
-    cb = UsageCallback(provider="test", model="m", role="draft")
-
-    result = LLMResult(generations=[], llm_output={})
-    with patch("app.llm.provider.get_sink") as mock_sink:
-        sink_instance = MagicMock()
-        mock_sink.return_value = sink_instance
-        cb.on_llm_end(result, run_id=uuid.uuid4())
-
-    event: UsageEvent = sink_instance.record_usage.call_args[0][0]
-    assert event.latency_ms is None

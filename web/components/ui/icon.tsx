@@ -18,6 +18,13 @@ import {
   CircleX,
   Loader,
   Shield,
+  Gauge,
+  Waypoints,
+  Sparkle,
+  CircleDollarSign,
+  Timer,
+  Hash,
+  DatabaseZap,
   type LucideIcon,
 } from "lucide-react";
 
@@ -42,6 +49,13 @@ const ICONS: Record<string, LucideIcon> = {
   CircleX,
   Loader,
   Shield,
+  Gauge,
+  Waypoints,
+  Sparkle,
+  CircleDollarSign,
+  Timer,
+  Hash,
+  DatabaseZap,
 };
 
 export function Icon({

@@ -1,11 +1,7 @@
 import type { EmailItem } from "@/lib/api";
 import { categoryMeta } from "@/lib/view/email";
+import { toneCls } from "@/lib/tone";
 import { Icon } from "@/components/ui/icon";
-
-/** Mock CSS tone tokens: our "brand" maps to the mock's "accent". */
-function toneCls(tone: string): string {
-  return tone === "brand" ? "accent" : tone;
-}
 
 export function CategoryBadge({ category }: { category: EmailItem["category"] }) {
   const c = categoryMeta(category);

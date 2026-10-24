@@ -1,141 +1,77 @@
+"""Logging wiring: handlers + noise policy.
+
+The log *format* lives in app/observability/log_schema.py — edit that file to change
+what a log line contains. This module only decides where lines go and which loggers
+are too noisy to keep at INFO.
+"""
+
 import json
 import logging
 import threading
 from datetime import datetime, timezone
-from app.observability.sink import current_run_id, current_run_kind
 
-class JsonFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        ts = datetime.fromtimestamp(record.created, timezone.utc).isoformat()
+from app.observability.log_schema import ContextFilter, JsonFormatter, to_event
 
-        log_obj = {
-            "ts": ts,
-            "level": record.levelname,
-            "logger": record.name,
-            "msg": record.getMessage(),
-        }
+# Third-party loggers capped at a level. httpx logs every request URL at INFO and
+# Telegram's URLs embed the bot token; uvicorn.access and APScheduler job chatter are
+# replaced by HTTP/run spans + metrics. sqlalchemy must stay ≥WARNING so its own INFO
+# statements can't re-enter DbLogHandler.
+NOISE_LEVELS: dict[str, int] = {
+    "httpx": logging.WARNING,
+    "httpcore": logging.WARNING,
+    "uvicorn.access": logging.WARNING,
+    "apscheduler.executors.default": logging.WARNING,
+    "apscheduler.scheduler": logging.WARNING,
+    "sqlalchemy": logging.WARNING,
+}
 
-        if hasattr(record, "run_id") and record.run_id is not None:
-            log_obj["run_id"] = record.run_id
-
-        if record.exc_info:
-            log_obj["exc_info"] = self.formatException(record.exc_info)
-
-        std_attrs = {
-            "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
-            "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
-            "created", "msecs", "relativeCreated", "thread", "threadName", "processName",
-            "process", "taskName", "run_id", "message"
-        }
-        for k, v in record.__dict__.items():
-            if k not in std_attrs:
-                try:
-                    json.dumps(v)
-                    log_obj[k] = v
-                except TypeError:
-                    log_obj[k] = str(v)
-
-        return json.dumps(log_obj)
-
-class RunContextFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        record.run_id = current_run_id.get()
-        record.kind = current_run_kind.get()
-        return True
-
-class JsonMemoryHandler(logging.Handler):
-    def __init__(self):
-        super().__init__()
-        self.setFormatter(JsonFormatter())
-        self.records = []
-
-    def emit(self, record):
-        try:
-            msg = self.format(record)
-            self.records.append(msg)
-        except Exception:
-            self.handleError(record)
-
-    def text(self) -> str:
-        return "\n".join(self.records)
-
-class RunCaptureFilter(logging.Filter):
-    def __init__(self, run_id: str):
-        super().__init__()
-        self.run_id = run_id
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        return getattr(record, "run_id", None) == self.run_id
-
-def _attach_buffer(run_id: str):
-    handler = JsonMemoryHandler()
-    handler.addFilter(RunContextFilter())
-    handler.addFilter(RunCaptureFilter(run_id))
-    logging.getLogger().addHandler(handler)
-    return handler
-
-def _detach(handler):
-    logging.getLogger().removeHandler(handler)
-
-
-# ---------------------------------------------------------------------------
-# Feature A: DbLogHandler — buffered, reentrancy-safe DB log persistence
-# ---------------------------------------------------------------------------
-# Design: we buffer records in-memory and flush every FLUSH_EVERY inserts or
-# when a threading.Timer fires (FLUSH_INTERVAL_SEC). This keeps individual
-# log statements fast while still persisting everything.
-# A reentrancy guard (_writing flag + ignoring sqlalchemy loggers) prevents
-# DB-write log messages from re-entering the handler and causing log storms.
+# Event keys stored in dedicated log_entry columns; every other key goes to `extra`.
+_LOG_ENTRY_COLUMNS = ("level", "logger", "msg", "run_id", "kind", "trace_id", "span_id", "exc_info")
 
 _DB_FLUSH_EVERY = 20          # flush after this many buffered records
-_DB_FLUSH_INTERVAL_SEC = 5.0  # also flush at least this often
+_DB_FLUSH_INTERVAL_SEC = 5.0  # …and at least this often
+_FLUSH_WAIT_SEC = 2.0         # explicit flushes wait this long for an in-progress one
+
+
+def _as_int(value) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
 
 class DbLogHandler(logging.Handler):
-    """Persist log records to the LogEntry table in observability.db.
+    """Persist log records to `log_entry` (observability.db), buffered.
 
-    Reentrancy-safe: ignores records from loggers whose names start with
-    'sqlalchemy' to prevent DB INSERT logs from re-entering the handler.
-    All exceptions in emit() are silently swallowed via self.handleError().
+    Reentrancy-safe: ignores `sqlalchemy*` loggers and drops records the flushing thread
+    emits during its own flush (other threads' records are kept for the next flush).
+    One flush runs at a time. Never raises into the logging call.
     """
 
-    # Loggers that must be suppressed to avoid infinite reentrancy
     _BLOCKED_PREFIXES = ("sqlalchemy",)
 
     def __init__(self):
         super().__init__()
-        self._lock = threading.Lock()
+        self.addFilter(ContextFilter())
+        self._lock = threading.Lock()        # guards _buffer / _timer
+        self._flush_lock = threading.Lock()  # serializes flushes
+        self._local = threading.local()      # .flushing: this thread is inside _persist
         self._buffer: list = []
-        self._writing = False
         self._timer: threading.Timer | None = None
         self._closed = False
 
-    def _is_reentrancy_risk(self, record: logging.LogRecord) -> bool:
-        name = record.name or ""
-        return any(name.startswith(p) for p in self._BLOCKED_PREFIXES)
-
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            if self._closed:
+            if self._closed or (record.name or "").startswith(self._BLOCKED_PREFIXES):
                 return
-            if self._is_reentrancy_risk(record):
-                return
-            # Stamp run_id/kind if RunContextFilter hasn't already done it
-            if not hasattr(record, "run_id"):
-                record.run_id = current_run_id.get()
-            if not hasattr(record, "kind"):
-                record.kind = current_run_kind.get()
-
+            if getattr(self._local, "flushing", False):
+                return  # re-entrancy from this thread's own flush — drop to avoid a storm
             with self._lock:
-                if self._writing:
-                    # Re-entrancy from our own flush path — drop to avoid storm
-                    return
                 self._buffer.append(record)
                 should_flush = len(self._buffer) >= _DB_FLUSH_EVERY
-
             if should_flush:
                 self._flush()
             elif self._timer is None:
-                # Start a timer to ensure we flush within the interval
                 self._arm_timer()
         except Exception:
             self.handleError(record)
@@ -143,145 +79,114 @@ class DbLogHandler(logging.Handler):
     def _arm_timer(self):
         with self._lock:
             if self._timer is None and not self._closed:
-                t = threading.Timer(_DB_FLUSH_INTERVAL_SEC, self._flush)
+                t = threading.Timer(_DB_FLUSH_INTERVAL_SEC, self._on_timer)
                 t.daemon = True
                 t.start()
                 self._timer = t
 
-    def _flush(self):
+    def _on_timer(self):
         with self._lock:
-            if self._writing:
-                return
-            if not self._buffer:
-                self._timer = None
-                return
-            records, self._buffer = self._buffer, []
-            self._writing = True
             self._timer = None
+        self._flush()
 
+    def _flush(self, wait: float | None = None) -> None:
+        """Persist the buffer. If another flush is running, `wait=None` (timer/size path)
+        leaves the records for a re-armed timer; `wait=N` waits up to N s for it first."""
         try:
-            self._persist(records)
+            acquired = (self._flush_lock.acquire(blocking=False) if wait is None
+                        else self._flush_lock.acquire(timeout=wait))
         except Exception:
-            pass  # Never let flush kill the app
-        finally:
+            return
+        if not acquired:
+            self._arm_timer()
+            return
+        try:
             with self._lock:
-                self._writing = False
+                records, self._buffer = self._buffer, []
+            if records:
+                self._local.flushing = True
+                try:
+                    self._persist(records)
+                finally:
+                    self._local.flushing = False
+        except Exception:
+            pass  # never let a flush kill the app
+        finally:
+            self._flush_lock.release()
 
     def _persist(self, records: list) -> None:
-        """Write a batch of records to the DB."""
-        import json as _json
-        from datetime import datetime, timezone
-        from app.store.observability import get_obs_session, LogEntry
-
-        std_attrs = {
-            "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
-            "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
-            "created", "msecs", "relativeCreated", "thread", "threadName", "processName",
-            "process", "taskName", "run_id", "message", "kind",
-        }
+        from app.store.observability import LogEntry, get_obs_session
 
         entries = []
         for record in records:
             try:
-                ts = datetime.fromtimestamp(record.created, timezone.utc)
-                msg = record.getMessage()
-                if record.exc_info:
-                    formatter = logging.Formatter()
-                    exc_text = formatter.formatException(record.exc_info)
-                    msg = f"{msg}\n{exc_text}" if exc_text else msg
-
-                run_id_val = getattr(record, "run_id", None)
-                run_id_int: int | None = None
-                if run_id_val is not None:
-                    try:
-                        run_id_int = int(run_id_val)
-                    except (TypeError, ValueError):
-                        pass
-
-                # Capture any extra structured fields
-                extra: dict = {}
-                for k, v in record.__dict__.items():
-                    if k not in std_attrs and not k.startswith("_"):
-                        try:
-                            _json.dumps(v)
-                            extra[k] = v
-                        except TypeError:
-                            extra[k] = str(v)
-
-                # Run kind, stamped on the record by RunContextFilter (excluded
-                # from `extra` via std_attrs). Only meaningful inside a run.
-                kind_raw = getattr(record, "kind", None)
-                kind_val: str | None = str(kind_raw) if kind_raw else None
-
+                event = to_event(record)
+                event.pop("ts", None)
+                cols = {c: event.pop(c, None) for c in _LOG_ENTRY_COLUMNS}
                 entries.append(LogEntry(
-                    ts=ts,
-                    level=record.levelname[:16],
-                    logger=(record.name or "")[:128],
-                    msg=msg,
-                    run_id=run_id_int,
-                    kind=kind_val,
-                    extra=_json.dumps(extra),
+                    ts=datetime.fromtimestamp(record.created, timezone.utc),
+                    level=(cols["level"] or "")[:16],
+                    logger=(cols["logger"] or "")[:128],
+                    msg=cols["msg"] or "",
+                    run_id=_as_int(cols["run_id"]),
+                    kind=str(cols["kind"]) if cols["kind"] else None,
+                    trace_id=cols["trace_id"],
+                    span_id=cols["span_id"],
+                    exc_info=cols["exc_info"],
+                    extra=json.dumps(event, default=str),
                 ))
             except Exception:
-                pass  # Skip a bad record, don't abort the batch
-
+                pass  # skip a bad record, keep the batch
         if not entries:
             return
-
         try:
             with get_obs_session() as session:
                 session.add_all(entries)
                 session.commit()
         except Exception:
-            pass  # DB write failure: log is lost, but app continues
+            pass  # DB unavailable: the lines are still on stdout
 
     def close(self):
-        """Final flush on shutdown."""
         self._closed = True
         if self._timer is not None:
             try:
                 self._timer.cancel()
             except Exception:
                 pass
-        # Flush remaining buffer synchronously
-        with self._lock:
-            records, self._buffer = self._buffer, []
-            self._writing = True
-        try:
-            if records:
-                self._persist(records)
-        except Exception:
-            pass
-        finally:
-            with self._lock:
-                self._writing = False
+        self._flush(wait=_FLUSH_WAIT_SEC)
         super().close()
 
 
 _db_log_handler: DbLogHandler | None = None
 
 
-def setup_logging():
+def flush_db_logs() -> None:
+    """Persist buffered records now (e.g. so a just-finished run's logs are queryable),
+    waiting briefly for an in-progress flush rather than skipping."""
+    if _db_log_handler is not None:
+        _db_log_handler._flush(wait=_FLUSH_WAIT_SEC)
+
+
+def setup_logging() -> None:
     global _db_log_handler
-    root_logger = logging.getLogger()
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
+    root = logging.getLogger()
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+    root.setLevel(logging.INFO)
+    for name, level in NOISE_LEVELS.items():
+        logging.getLogger(name).setLevel(level)
 
-    root_logger.setLevel(logging.INFO)
+    stdout = logging.StreamHandler()
+    stdout.setFormatter(JsonFormatter())
+    stdout.addFilter(ContextFilter())
+    root.addHandler(stdout)
 
-    # Prevent SQLAlchemy INFO/DEBUG from causing reentrancy in DbLogHandler
-    # (SQLAlchemy logs SQL statements at INFO level when echo=True, and various
-    # internal messages; keeping it at WARNING is safe for production use)
-    logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
-    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-
-    # Stdout JSON handler (existing)
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonFormatter())
-    handler.addFilter(RunContextFilter())
-    root_logger.addHandler(handler)
-
-    # Feature A: DB persistence handler
     _db_log_handler = DbLogHandler()
-    _db_log_handler.addFilter(RunContextFilter())
-    root_logger.addHandler(_db_log_handler)
+    root.addHandler(_db_log_handler)
+
+    from app.config import get_settings
+
+    if get_settings().metrics_enabled:
+        from app.observability.metrics import LogCountHandler
+
+        root.addHandler(LogCountHandler())

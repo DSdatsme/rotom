@@ -1,28 +1,24 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import type { RunLog } from "@/lib/api";
-import type { Tone } from "@/lib/view/email";
 import { RUN_STATUS } from "@/lib/view/run";
 import { relativeTime, formatDuration } from "@/lib/format/datetime";
+import { toneCls } from "@/lib/tone";
 import { Icon } from "@/components/ui/icon";
 import { Panel } from "@/components/ui/panel";
 import { EmptyState } from "@/components/ui/empty-state";
 import { TriggerRunButton } from "@/components/trigger-run-button";
+import { useInterval } from "@/hooks/use-interval";
 
 const POLL_INTERVAL = 4000; // ms
 
-/** Mock CSS tone tokens: our "brand" maps to the mock's "accent". */
-function toneCls(tone: Tone): string {
-  return tone === "brand" ? "accent" : tone;
-}
-
-export function RunsList({ initialRuns }: { initialRuns: RunLog[] }) {
+export function RunsList({ initialRuns, kind = "" }: { initialRuns: RunLog[]; kind?: string }) {
   const [runs, setRuns] = useState<RunLog[]>(initialRuns);
   const [source, setSource] = useState<string>("");
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const router = useRouter();
 
   const hasRunning = runs.some((r) => r.status === "running");
@@ -37,6 +33,7 @@ export function RunsList({ initialRuns }: { initialRuns: RunLog[] }) {
     try {
       const qs = new URLSearchParams({ limit: "50" });
       if (source) qs.set("source", source);
+      if (kind) qs.set("kind", kind);
       const res = await fetch(`/api/runs-proxy?${qs.toString()}`);
       if (res.ok) setRuns(await res.json());
     } catch {
@@ -47,23 +44,9 @@ export function RunsList({ initialRuns }: { initialRuns: RunLog[] }) {
   useEffect(() => {
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source]);
+  }, [source, kind]);
 
-  useEffect(() => {
-    if (hasRunning) {
-      intervalRef.current = setInterval(refresh, POLL_INTERVAL);
-    } else if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasRunning, source]);
+  useInterval(refresh, hasRunning ? POLL_INTERVAL : null);
 
   const now = Date.now();
 
@@ -89,6 +72,12 @@ export function RunsList({ initialRuns }: { initialRuns: RunLog[] }) {
         <button className={"src-pill" + (source === "" ? " active" : "")} onClick={() => setSource("")}>
           All sources
         </button>
+        {kind && (
+          <Link href="/email/runs" className="src-pill active" aria-label={`Clear kind filter ${kind}`}>
+            kind: {kind}
+            <span className="src-pill-x"><X size={11} /></span>
+          </Link>
+        )}
         {sources.map((s) => (
           <button key={s} className={"src-pill" + (source === s ? " active" : "")} onClick={() => setSource(s)}>
             {s}
@@ -105,10 +94,10 @@ export function RunsList({ initialRuns }: { initialRuns: RunLog[] }) {
         <Panel>
           <EmptyState
             icon="History"
-            title={source ? "No runs from this source" : "No runs recorded yet"}
+            title={source || kind ? "No runs match this filter" : "No runs recorded yet"}
             body={
-              source
-                ? "Nothing matches this source filter yet."
+              source || kind
+                ? "Nothing matches the current filter yet."
                 : "Background tasks and triage runs will appear here as they execute."
             }
           />

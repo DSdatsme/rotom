@@ -1,5 +1,10 @@
 import type { Tone } from "@/lib/view/email";
 
+/** Mock CSS tone tokens: our "brand" maps to the mock's "accent". */
+export function toneCls(tone: Tone): string {
+  return tone === "brand" ? "accent" : tone;
+}
+
 /**
  * Badge styling per semantic tone — matches the mockup recipe:
  * colored text + a colored border + a soft background tint.

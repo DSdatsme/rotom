@@ -34,6 +34,11 @@ def parse_attachments(raw: str) -> list[AttachmentMeta]:
                 out.append(AttachmentMeta(key, label, path))
     return out
 
+def _csv_list(raw: str, *, lower: bool = False) -> list[str]:
+    """Comma-separated string -> trimmed, blank-filtered list."""
+    items = [s.strip() for s in raw.split(",") if s.strip()]
+    return [s.lower() for s in items] if lower else items
+
 def resolve_attachments(keys: list[str], metas: list[AttachmentMeta]) -> list[str]:
     """Map selected keys -> file paths. Raise on unknown key or missing file (never
     silently drop an attachment the user opted into)."""
@@ -132,10 +137,15 @@ class Settings(BaseSettings):
 
     # --- Observability ---
     observability_backends: str = "sqlite"
-    # Local log retention — entries older than this are pruned at startup.
+    # Local log retention — entries older than this are pruned at startup and daily.
     # Increase or set to 0 to keep more history. The pluggable sink seam is
     # the right place to add external shipping (e.g. Datadog, Loki) later.
     log_retention_days: int = 14
+    trace_retention_days: int = 30  # span rows older than this are pruned (0 = keep all)
+    # Capture LLM prompts/responses + tool args/results on spans (truncated + redacted).
+    obs_capture_content: bool = True
+    obs_content_max_chars: int = 8000  # per message / payload
+    metrics_enabled: bool = False  # expose Prometheus /metrics (bearer auth)
 
     @property
     def db_path(self) -> str:
@@ -151,19 +161,19 @@ class Settings(BaseSettings):
 
     @property
     def account_names(self) -> list[str]:
-        return [a.strip() for a in self.gmail_accounts.split(",") if a.strip()]
+        return _csv_list(self.gmail_accounts)
 
     @property
     def key_sender_list(self) -> list[str]:
-        return [s.strip().lower() for s in self.key_senders.split(",") if s.strip()]
+        return _csv_list(self.key_senders, lower=True)
 
     @property
     def excluded_topic_list(self) -> list[str]:
-        return [t.strip() for t in self.excluded_topics.split(",") if t.strip()]
+        return _csv_list(self.excluded_topics)
 
     @property
     def coding_agent_repo_list(self) -> list[str]:
-        return [r.strip() for r in self.coding_agent_repos.split(",") if r.strip()]
+        return _csv_list(self.coding_agent_repos)
 
     @property
     def attachment_list(self) -> list[AttachmentMeta]:

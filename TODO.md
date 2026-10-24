@@ -149,10 +149,17 @@ auto-drafted replies · Conversational draft composer · Next.js dashboard with 
       run→sub-run nesting (workflow→triage, coding-agent→sub-tasks).
 - [ ] **First-class Inngest run tracking** — middleware-driven idempotent rows + status sync
       (today: link-only to the Inngest dashboard).
-- [ ] **Tool-call counts** — per-run agent tool-call metrics (needs an agent-side hook).
+- [x] **Tool-call counts** — now `execute_tool` spans + `v_tool_calls` + `rotom_tool_calls_total`.
 - [ ] **Optional external provider** — ship traces/metrics/logs to BetterStack / Datadog / Loki
       via a new sink, if local SQLite is ever outgrown. (Earlier rejected Langfuse: ≈30-day free
       retention too short.)
+
+## Observability v2 follow-ups
+
+- [ ] Telegram alerting on failures / cost spikes
+- [ ] Optional OTLP exporter (`OTEL_EXPORTER_OTLP_ENDPOINT` → second span processor)
+- [ ] Inngest run status sync
+- [ ] Rotate the Telegram bot token (v1 logged it to stdout and `log_entry`)
 
 ## Infra / ops
 
@@ -234,17 +241,14 @@ code before acting.
       Either reuse (git fetch + reset + checkout -B) or remove before clone.
 
 ### Concurrency / data (lower-severity than the High set, same families)
-- [ ] **Propagate `current_run_id` into the triage worker thread** — `jobs.py:40-42`. The
-      ContextVar isn't copied across `asyncio.to_thread`, so triage LLM usage + DB logs are
-      unattributed to the run. Capture it and re-set inside the thread (or use
-      `contextvars.copy_context().run`).
+- [x] **Propagate `current_run_id` into the triage worker thread** (**not a bug**: `asyncio.to_thread` copies contextvars; verified by `test_to_thread_keeps_span_parent`) — `jobs.py:40-42`.
 - [ ] **Guard obs-DB lazy session-factory init** — `store/observability.py:102-117`.
       Check-then-act on `_SessionFactory` can race across threads → `TypeError: 'NoneType'
       not callable`. Add a lock (same pattern as a future `db.init_db` guard).
 - [ ] **Atomic reminder create/cancel** — `tools/reminders/service.py:45-68`. DB commit and
       scheduler registration can partially fail (orphaned job or orphaned row). Register the
       job only after the row commits, and remove the row if registration throws.
-- [ ] **Fix `_prune_old_logs` timestamp comparison** — `store/observability.py:148-160`.
+- [x] **Fix `_prune_old_logs` timestamp comparison** — `store/observability.py:148-160`.
       Compares an ISO-with-offset string against space-separated/offset-less stored values,
       so pruning is unreliable. Normalize to a single stored format (UTC, ISO-8601).
 
@@ -262,10 +266,10 @@ code before acting.
 ### Observability / cost
 - [ ] **Cap `max_tokens` for all providers** — `llm/provider.py:122-144`. The output cap is
       applied only to Anthropic; Gemini/Groq run uncapped. Apply per-provider.
-- [ ] **Bound obs table growth** — `store/observability.py:148-161`. `run_log`/`llm_usage`
+- [x] **Bound obs table growth** (retention for spans + logs; run blob no longer written) — `store/observability.py:148-161`. `run_log`/`llm_usage`
       grow unbounded and full per-run log text is stored; add retention/rotation for both
       (not just `log_entry`), and consider truncating stored log text.
-- [ ] **Redact secrets from captured logs** — `logging_setup.py:30-224`. Full root-logger
+- [x] **Redact secrets from captured logs** — `logging_setup.py:30-224`. Full root-logger
       output is captured unredacted into run logs and shown in the dashboard. Add a scrubbing
       filter (tokens, keys, Authorization headers, email bodies) before persistence.
 
@@ -293,16 +297,16 @@ Minor robustness/quality items; verify before acting. Full context in the review
 - [ ] DB/obs: index `emails` filter/sort columns (`db.py:65-87`) and `llm_usage.run_id`
       (`observability.py:61-73`); `get_obs_session` doesn't commit on exit while `get_session`
       does — align the contract (`observability.py:163-168`); add the existence guard to the
-      emails branch of `_migrate` (`db.py:182-206`); run `_prune_old_logs` periodically, not
-      only at startup (`observability.py:102-160`).
+      emails branch of `_migrate` (`db.py:182-206`). (Done: `_prune_old_logs` now runs daily via the
+      `obs-prune` job.)
 - [ ] Gmail: References-header dedup substring check can drop a needed Message-ID
       (`client.py:104-107`); add retry/backoff on transient Gmail errors (`client.py:157-189`).
 - [ ] Injection: instruction-pattern scoring counts distinct patterns, not occurrences
       (`injection.py:58-68`).
 - [ ] Pipeline/classifier: force `skip` emails to urgency 0 (`classifier.py:143-149`);
       `extract_text` silently yields "" on no text blocks (`provider.py:82-98`).
-- [ ] Provider: `UsageCallback` leaks start-time entries and drops usage on LLM error — add
-      `on_llm_error` (`provider.py:24-79`).
+- [x] Provider: `UsageCallback` leaks start-time entries and drops usage on LLM error — replaced
+      by `LlmTracingCallback`, which ends spans in `on_llm_error` too.
 - [ ] Logging: `DbLogHandler` drops records emitted during an in-progress flush
       (`logging_setup.py:128-131`).
 - [ ] Reminders: dead no-op tzinfo replace in `next_fire_at` (`service.py:87`).

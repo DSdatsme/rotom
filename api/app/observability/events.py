@@ -1,24 +1,10 @@
 from dataclasses import dataclass, field
-from datetime import datetime
-
-@dataclass(frozen=True)
-class UsageEvent:
-    provider: str
-    model: str
-    role: str
-    input_tokens: int
-    output_tokens: int
-    run_id: str | None
-    ts: datetime
-    # Feature B: per-call LLM latency in milliseconds (None when not measured)
-    latency_ms: int | None = None
 
 @dataclass(frozen=True)
 class RunResult:
     status: str
     summary: str = ""
     error: str = ""
-    logs: str = ""
 
 
 @dataclass(frozen=True)
@@ -33,3 +19,4 @@ class RunStart:
     external_id: str | None = None
     external_url: str | None = None
     parent_run_id: str | None = None
+    trace_id: str | None = None

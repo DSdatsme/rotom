@@ -1,64 +1,53 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { ArrowLeft, ArrowUpRight, Activity } from "lucide-react";
-import type { RunDetail, RunStatus } from "@/lib/api";
-import type { Tone } from "@/lib/view/email";
+import type { RunDetail, RunStatus, TraceDetail } from "@/lib/api";
 import { formatTokens, computeDuration, parseJsonlLogs, formatDateTime } from "@/lib/obs-utils";
 import { RUN_STATUS } from "@/lib/view/run";
-import { toneDot } from "@/lib/tone";
+import { toneDot, toneCls } from "@/lib/tone";
 import { Icon } from "@/components/ui/icon";
 import { Panel } from "@/components/ui/panel";
 import { LogsPanel } from "@/components/logs-panel";
+import { TraceView } from "@/components/obs/trace-view";
+import { formatUsd } from "@/lib/format/number";
+import { useInterval } from "@/hooks/use-interval";
 
 const POLL_INTERVAL = 4000; // ms
+const TRACE_EXPORT_DELAY = 2500; // ms — spans are batch-exported every 2 s
 
-/** Mock CSS tone tokens: our "brand" maps to the mock's "accent". */
-function toneCls(tone: Tone): string {
-  return tone === "brand" ? "accent" : tone;
-}
-
-export function RunDetailLive({ initialRun, runId }: { initialRun: RunDetail; runId: string }) {
+export function RunDetailLive({ initialRun, runId, trace }: { initialRun: RunDetail; runId: string; trace: TraceDetail | null }) {
+  const router = useRouter();
   const [run, setRun] = useState<RunDetail>(initialRun);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [, setTick] = useState(0);
 
   const isRunning = run.status === "running";
 
+  // Rendered while running, now finished: once its spans have exported, re-render the
+  // server page so the finished trace replaces the stale one. The refreshed page's
+  // initialRun is no longer running, so this fires once per transition.
+  const justFinished = initialRun.status === "running" && !isRunning;
+  useEffect(() => {
+    if (!justFinished) return;
+    const t = setTimeout(() => router.refresh(), TRACE_EXPORT_DELAY);
+    return () => clearTimeout(t);
+  }, [justFinished, router]);
+
   const refresh = async () => {
     try {
       const res = await fetch(`/api/run-proxy?id=${runId}`);
-      if (res.ok) {
-        const data: RunDetail = await res.json();
-        setRun(data);
-        if (data.status !== "running" && intervalRef.current) {
-          clearInterval(intervalRef.current);
-          intervalRef.current = null;
-        }
-      }
+      if (res.ok) setRun(await res.json());
     } catch {
       // network blip — ignore
     }
   };
 
-  useEffect(() => {
-    if (isRunning) intervalRef.current = setInterval(refresh, POLL_INTERVAL);
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRunning]);
+  useInterval(refresh, isRunning ? POLL_INTERVAL : null);
 
   // tick every second so the live duration counts up
-  useEffect(() => {
-    if (!isRunning) return;
-    const t = setInterval(() => setTick((n) => n + 1), 1000);
-    return () => clearInterval(t);
-  }, [isRunning]);
+  useInterval(() => setTick((n) => n + 1), isRunning ? 1000 : null);
 
   const st = RUN_STATUS[run.status as RunStatus] ?? RUN_STATUS.failure;
   const tone = toneCls(st.tone);
@@ -148,6 +137,7 @@ export function RunDetailLive({ initialRun, runId }: { initialRun: RunDetail; ru
                   <th style={{ textAlign: "right" }}>In</th>
                   <th style={{ textAlign: "right" }}>Out</th>
                   <th style={{ textAlign: "right" }}>Avg latency</th>
+                  <th style={{ textAlign: "right" }}>Cost</th>
                 </tr>
               </thead>
               <tbody>
@@ -159,6 +149,7 @@ export function RunDetailLive({ initialRun, runId }: { initialRun: RunDetail; ru
                     <td className="mono" style={{ textAlign: "right" }}>
                       {m.avg_latency_ms != null ? `${(m.avg_latency_ms / 1000).toFixed(2)}s` : "—"}
                     </td>
+                    <td className="mono" style={{ textAlign: "right" }}>{formatUsd(m.cost_usd)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -191,6 +182,18 @@ export function RunDetailLive({ initialRun, runId }: { initialRun: RunDetail; ru
             })}
           </div>
         </Panel>
+      )}
+
+      {trace && trace.spans.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold">Trace</h2>
+            <Link href={`/observability/traces/${trace.trace_id}`} className="text-xs text-brand hover:underline">
+              Open full trace →
+            </Link>
+          </div>
+          <TraceView detail={trace} compact />
+        </div>
       )}
 
       <LogsPanel

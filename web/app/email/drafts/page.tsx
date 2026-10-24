@@ -3,6 +3,7 @@ import { Lock, Send, CircleCheck } from "lucide-react";
 
 import { getDrafts } from "@/lib/api";
 import { toDraftView } from "@/lib/view/draft";
+import { toneCls } from "@/lib/tone";
 import { Panel } from "@/components/ui/panel";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CategoryBadge } from "@/components/category-badge";
@@ -10,11 +11,6 @@ import { DiscardDraftButton } from "@/components/discard-draft-button";
 import { CreateDraftButton } from "@/components/create-draft-button";
 
 export const dynamic = "force-dynamic";
-
-/** Mock CSS tone tokens: our "brand" maps to the mock's "accent". */
-function toneCls(tone: string): string {
-  return tone === "brand" ? "accent" : tone;
-}
 
 export default async function DraftsPage({
   searchParams,

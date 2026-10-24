@@ -26,6 +26,20 @@ def get_gmail_account(account_name: str):
 
 # --- serializers ---
 
+def _draft_attachment_keys(d: Draft) -> list[str]:
+    import json
+    try:
+        return json.loads(d.attachments)
+    except Exception:
+        return []
+
+
+def _email_compose_dict(e: Email | None) -> dict | None:
+    if e is None:
+        return None
+    return {"sender": e.sender, "subject": e.subject, "body": e.body or e.snippet, "snippet": e.snippet}
+
+
 def _email_json(e: Email, include_body: bool = False) -> dict:
     data = {
         "id": e.id,
@@ -48,12 +62,8 @@ def _email_json(e: Email, include_body: bool = False) -> dict:
 
 def _draft_json(d: Draft, e: Email | None, include_body: bool = False) -> dict:
     from app.config import get_settings
-    import json
-    try:
-        keys = json.loads(d.attachments)
-    except Exception:
-        keys = []
-    
+    keys = _draft_attachment_keys(d)
+
     settings = get_settings()
     att_meta = {m.key: m for m in settings.attachment_list}
     parsed_attachments = []
@@ -96,6 +106,28 @@ def _resolve_footer_url(settings, rotom_footer: bool | None) -> str:
     return settings.email_footer_url if (use_footer and settings.email_footer_url) else ""
 
 
+def _resolve_send_args(draft: Draft, email: Email | None, opts: "FooterOption") -> dict:
+    """Build the shared kwargs for `create_gmail_draft`/`send_message`: recipient,
+    subject, and threading fields fall back from the draft to its source email."""
+    from app.config import get_settings, resolve_attachments
+
+    settings = get_settings()
+    try:
+        attachments = resolve_attachments(_draft_attachment_keys(draft), settings.attachment_list)
+    except (FileNotFoundError, KeyError) as e:
+        raise HTTPException(422, str(e))
+    return dict(
+        to=draft.to_addr or (email.sender if email else ""),
+        subject=draft.subject or (email.subject if email else ""),
+        body=draft.body,
+        attachments=attachments,
+        thread_id=email.thread_id if email else None,
+        in_reply_to=email.rfc_message_id if email else "",
+        references=email.references if email else "",
+        footer_url=_resolve_footer_url(settings, opts.rotom_footer),
+    )
+
+
 class FooterOption(BaseModel):
     rotom_footer: bool | None = None
 
@@ -111,6 +143,10 @@ class DraftUpdate(BaseModel):
 def create_app(api_token: str) -> FastAPI:
     app = FastAPI(title="rotom api")
 
+    from app.observability.http import install_http_observability
+
+    install_http_observability(app)
+
     async def require_auth(request: Request) -> None:
         import hmac
 
@@ -124,6 +160,18 @@ def create_app(api_token: str) -> FastAPI:
     @app.get("/api/health")
     async def health() -> dict:
         return {"status": "ok"}
+
+    @app.get("/metrics", dependencies=[Depends(require_auth)], include_in_schema=False)
+    def metrics_endpoint():
+        from fastapi import Response
+
+        from app.config import get_settings
+        from app.observability import metrics
+
+        if not get_settings().metrics_enabled:
+            raise HTTPException(404, "Metrics disabled (set METRICS_ENABLED=true)")
+        body, content_type = metrics.render()
+        return Response(content=body, media_type=content_type)
 
     def _parse_date(value: str):
         try:
@@ -243,7 +291,7 @@ def create_app(api_token: str) -> FastAPI:
     def regenerate_draft(email_id: int) -> dict:
         """(Re)generate the reply draft for an email. Replaces the pending draft if one exists."""
         from app.llm.provider import get_chat_model
-        from app.tools.drafts.composer import ComposerContext, compose
+        from app.tools.drafts.composer import ComposerContext, Identity, compose
         from app.config import get_settings
         from app.store.db import DraftKind, DraftMessage
 
@@ -251,8 +299,7 @@ def create_app(api_token: str) -> FastAPI:
             e = s.get(Email, email_id)
             if e is None:
                 raise HTTPException(404, f"Email {email_id} not found")
-            email_dict = {"sender": e.sender, "subject": e.subject,
-                          "body": e.body or e.snippet, "snippet": e.snippet}
+            email_dict = _email_compose_dict(e)
 
             pending = (
                 s.query(Draft)
@@ -273,7 +320,7 @@ def create_app(api_token: str) -> FastAPI:
                 kind=DraftKind.REPLY,
                 new_message="Generate draft",
                 source_email=email_dict,
-                identity=type("Identity", (), {"name": settings.user_name, "signature": settings.user_signature})(),
+                identity=Identity(name=settings.user_name, signature=settings.user_signature),
                 soul=_read_soul(settings.soul_file),
             )
             
@@ -293,14 +340,18 @@ def create_app(api_token: str) -> FastAPI:
             except Exception as exc:
                 raise HTTPException(500, f"Error generating draft: {exc}")
 
-    def _read_soul(path: str) -> str:
-        if not path: return ""
+    def _read_file_safe(path: str) -> str | None:
         import os
-        if os.path.isfile(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f: return f.read().strip()
-            except Exception: pass
-        return ""
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            return None
+
+    def _read_soul(path: str) -> str:
+        return (_read_file_safe(path) or "").strip()
 
     def _get_draft_or_404(s, draft_id: int) -> tuple[Draft, Email | None]:
         draft = s.get(Draft, draft_id)
@@ -332,10 +383,9 @@ def create_app(api_token: str) -> FastAPI:
     @app.post("/api/drafts/{draft_id}/messages", dependencies=[Depends(require_auth)])
     def post_draft_message(draft_id: int, payload: MessageCreate) -> dict:  # sync: blocking LLM I/O
         from app.llm.provider import get_chat_model
-        from app.tools.drafts.composer import ComposerContext, compose
+        from app.tools.drafts.composer import ComposerContext, Identity, compose
         from app.config import get_settings
         from app.store.db import DraftMessage, DraftKind
-        import json
 
         with get_session() as s:
             draft, email = _get_draft_or_404(s, draft_id)
@@ -348,23 +398,15 @@ def create_app(api_token: str) -> FastAPI:
 
             settings = get_settings()
             history = [(m.role, m.content) for m in draft.messages[:-1]]
-            email_dict = None
-            if email:
-                email_dict = {"sender": email.sender, "subject": email.subject, "body": email.body or email.snippet, "snippet": email.snippet}
-            
-            try:
-                sel_keys = json.loads(draft.attachments)
-            except Exception:
-                sel_keys = []
-            
-            att_metas = [m for m in settings.attachment_list if m.key in set(sel_keys)]
+            sel_keys = set(_draft_attachment_keys(draft))
+            att_metas = [m for m in settings.attachment_list if m.key in sel_keys]
 
             ctx = ComposerContext(
                 kind=draft.kind,
                 new_message=msg_content,
-                source_email=email_dict,
+                source_email=_email_compose_dict(email),
                 history=history,
-                identity=type("Identity", (), {"name": settings.user_name, "signature": settings.user_signature})(),
+                identity=Identity(name=settings.user_name, signature=settings.user_signature),
                 attachments=att_metas,
                 soul=_read_soul(settings.soul_file),
             )
@@ -423,48 +465,19 @@ def create_app(api_token: str) -> FastAPI:
 
     @app.post("/api/drafts/{draft_id}/save-to-gmail", dependencies=[Depends(require_auth)])
     def save_to_gmail(draft_id: int, opts: FooterOption = FooterOption()) -> dict:  # sync: blocking Gmail I/O
-        from app.config import get_settings, resolve_attachments
-        import json
         from googleapiclient.errors import HttpError
-        
+
         with get_session() as s:
             draft, email = _get_draft_or_404(s, draft_id)
             if draft.status != DraftStatus.PENDING:
                 raise HTTPException(409, f"Draft is {draft.status}")
-            
-            try:
-                sel_keys = json.loads(draft.attachments)
-            except Exception:
-                sel_keys = []
-                
-            try:
-                paths = resolve_attachments(sel_keys, get_settings().attachment_list)
-            except (FileNotFoundError, KeyError) as e:
-                raise HTTPException(422, str(e))
 
+            send_args = _resolve_send_args(draft, email, opts)
             account_name = draft.account or (email.account if email else "")
             account = get_gmail_account(account_name)
 
-            to_addr = draft.to_addr or (email.sender if email else "")
-            subject = draft.subject or (email.subject if email else "")
-            thread_id = email.thread_id if email else None
-            in_reply_to = email.rfc_message_id if email else ""
-            references = email.references if email else ""
-
-            footer_url = _resolve_footer_url(get_settings(), opts.rotom_footer)
-
             try:
-                res = account.create_gmail_draft(
-                    to=to_addr,
-                    subject=subject,
-                    body=draft.body,
-                    attachments=paths,
-                    thread_id=thread_id,
-                    in_reply_to=in_reply_to,
-                    references=references,
-                    gmail_draft_id=draft.gmail_draft_id,
-                    footer_url=footer_url,
-                )
+                res = account.create_gmail_draft(**send_args, gmail_draft_id=draft.gmail_draft_id)
             except HttpError as e:
                 if e.resp.status == 403:
                     raise HTTPException(409, "re-run auth_setup to grant gmail.compose")
@@ -476,8 +489,6 @@ def create_app(api_token: str) -> FastAPI:
 
     @app.post("/api/drafts/{draft_id}/send", dependencies=[Depends(require_auth)])
     def send_draft(draft_id: int, opts: FooterOption = FooterOption()) -> dict:  # sync: blocking Gmail I/O
-        from app.config import get_settings, resolve_attachments
-        import json
         from app.store.db import DraftKind
 
         # Phase 1: validate + claim the draft (PENDING -> SENDING) and gather all send
@@ -489,30 +500,11 @@ def create_app(api_token: str) -> FastAPI:
             if draft.status != DraftStatus.PENDING:
                 raise HTTPException(409, f"Draft is {draft.status}, cannot send")
 
-            to_addr = draft.to_addr or (email.sender if email else "")
-            if draft.kind == DraftKind.OUTREACH and not to_addr:
+            send_args = _resolve_send_args(draft, email, opts)
+            if draft.kind == DraftKind.OUTREACH and not send_args["to"]:
                 raise HTTPException(422, "Missing to_addr for outreach")
 
-            try:
-                sel_keys = json.loads(draft.attachments)
-            except Exception:
-                sel_keys = []
-            try:
-                paths = resolve_attachments(sel_keys, get_settings().attachment_list)
-            except (FileNotFoundError, KeyError) as e:
-                raise HTTPException(422, str(e))
-
             account_name = draft.account or (email.account if email else "")
-            send_args = dict(
-                to=to_addr,
-                subject=draft.subject or (email.subject if email else ""),
-                body=draft.body,
-                attachments=paths,
-                thread_id=email.thread_id if email else None,
-                in_reply_to=email.rfc_message_id if email else "",
-                references=email.references if email else "",
-                footer_url=_resolve_footer_url(get_settings(), opts.rotom_footer),
-            )
             gmail_draft_id = draft.gmail_draft_id
             draft.status = DraftStatus.SENDING  # committed on block exit
 
@@ -657,15 +649,7 @@ def create_app(api_token: str) -> FastAPI:
     @app.get("/api/soul", dependencies=[Depends(require_auth)])
     async def get_soul() -> dict:
         from app.config import get_settings
-        import os
-        path = get_settings().soul_file
-        if not path or not os.path.isfile(path):
-            return {"content": ""}
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return {"content": f.read()}
-        except Exception:
-            return {"content": ""}
+        return {"content": _read_file_safe(get_settings().soul_file) or ""}
 
     @app.put("/api/soul", dependencies=[Depends(require_auth)])
     async def update_soul(payload: SoulUpdate) -> dict:
@@ -693,7 +677,7 @@ def create_app(api_token: str) -> FastAPI:
             return default
 
     @app.get("/api/observability/runs", dependencies=[Depends(require_auth)])
-    async def get_obs_runs(limit: int = 50, source: str = "", kind: str = ""):
+    def get_obs_runs(limit: int = 50, source: str = "", kind: str = ""):
         from app.observability.sink import get_query_provider
         return _safe_obs_read(
             lambda: get_query_provider().list_runs(
@@ -703,22 +687,15 @@ def create_app(api_token: str) -> FastAPI:
         )
 
     @app.get("/api/observability/runs/{run_id}", dependencies=[Depends(require_auth)])
-    async def get_obs_run(run_id: str):
+    def get_obs_run(run_id: str):
         from app.observability.sink import get_query_provider
         run = _safe_obs_read(lambda: get_query_provider().get_run(run_id), None, "run")
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         return run
 
-    @app.get("/api/observability/usage", dependencies=[Depends(require_auth)])
-    async def get_obs_usage(days: int = 14):
-        from app.observability.sink import get_query_provider
-        return _safe_obs_read(
-            lambda: get_query_provider().usage_by_model_day(days=days), [], "usage"
-        )
-
     @app.get("/api/observability/logs", dependencies=[Depends(require_auth)])
-    async def get_obs_logs(
+    def get_obs_logs(
         level: str = "",
         kind: str = "",
         run_id: int | None = None,
@@ -727,10 +704,12 @@ def create_app(api_token: str) -> FastAPI:
         until: str = "",
         limit: int = 100,
         before_id: int | None = None,
+        trace_id: str = "",
     ):
         from app.observability.sink import get_query_provider
         return _safe_obs_read(
             lambda: get_query_provider().list_logs(
+                trace_id=trace_id or None,
                 level=level or None,
                 kind=kind or None,
                 run_id=run_id,
@@ -743,18 +722,52 @@ def create_app(api_token: str) -> FastAPI:
             {"logs": [], "next_before_id": None}, "logs",
         )
 
+    @app.get("/api/observability/overview", dependencies=[Depends(require_auth)])
+    def get_obs_overview(hours: int = 24):
+        from app.observability import queries
+
+        hours = max(1, min(hours, 24 * 90))
+        return _safe_obs_read(lambda: queries.overview(hours), queries.empty_overview(hours), "overview")
+
+    @app.get("/api/observability/traces", dependencies=[Depends(require_auth)])
+    def get_obs_traces(limit: int = 50, before: str = "", type: str = "", status: str = "", q: str = ""):
+        from app.observability import queries
+
+        return _safe_obs_read(
+            lambda: queries.traces(limit=max(1, min(limit, 200)), before=before or None,
+                                   trace_type=type or None, status=status or None, q=q or None),
+            {"traces": [], "next_before": None}, "traces",
+        )
+
+    @app.get("/api/observability/traces/{trace_id}", dependencies=[Depends(require_auth)])
+    def get_obs_trace(trace_id: str):
+        from app.observability import queries
+
+        detail = _safe_obs_read(lambda: queries.trace_detail(trace_id), None, "trace")
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Trace not found")
+        return detail
+
+    @app.get("/api/observability/llm", dependencies=[Depends(require_auth)])
+    def get_obs_llm(days: int = 7):
+        from app.observability import queries
+
+        days = max(1, min(days, 90))
+        return _safe_obs_read(lambda: queries.llm_stats(days), queries.empty_llm_stats(days), "llm")
+
     @app.post("/api/triage/trigger", dependencies=[Depends(require_auth)])
     async def trigger_triage_job():
-        from app.scheduler.jobs import get_scheduler, scheduled_gmail_triage_job
+        from app.scheduler.jobs import add_job_detached, get_scheduler, scheduled_gmail_triage_job
         from apscheduler.triggers.date import DateTrigger
         from app.store.db import utcnow
         import uuid
-        
+
         scheduler = get_scheduler()
         if not scheduler:
             raise HTTPException(status_code=500, detail="Scheduler not running")
-            
-        scheduler.add_job(
+
+        add_job_detached(
+            scheduler,
             scheduled_gmail_triage_job,
             trigger=DateTrigger(run_date=utcnow()),
             kwargs={"source": "manual"},
