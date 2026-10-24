@@ -1,6 +1,7 @@
 """Tests for merging/normalizing Calendar events across accounts."""
 
 from datetime import date
+from zoneinfo import ZoneInfo
 
 from app.tools.calendar.service import (
     _normalize_event, format_daily_brief, list_events_for_range,
@@ -38,8 +39,16 @@ class TestNormalizeEvent:
         assert norm == {
             "account": "personal", "event_id": "e1", "title": "Standup",
             "start": "2026-07-28T09:00:00+05:30", "end": "2026-07-28T09:30:00+05:30",
-            "all_day": False, "location": "Downtown Clinic",
+            "all_day": False, "location": "Downtown Clinic", "declined": False,
         }
+
+    def test_declined_only_when_the_owner_declined(self):
+        ev = _timed_event()
+        ev["attendees"] = [{"email": "boss@x", "responseStatus": "declined"},
+                           {"email": "me@x", "self": True, "responseStatus": "accepted"}]
+        assert _normalize_event(ev, account="work")["declined"] is False
+        ev["attendees"][1]["responseStatus"] = "declined"
+        assert _normalize_event(ev, account="work")["declined"] is True
 
     def test_all_day_event(self):
         norm = _normalize_event(_all_day_event(), account="personal")
@@ -144,9 +153,7 @@ class TestFormatDailyBrief:
         events = [{"account": "personal", "title": "Diwali", "start": "2026-07-28",
                    "end": "2026-07-29", "all_day": True, "event_id": "e2", "location": None}]
         text = format_daily_brief(events, [], date(2026, 7, 28))
-        assert "Diwali [personal]" in text
-        # No leaked time-slice prefix (all-day events have no 'HH:MM' in their start string)
-        assert "None Diwali" not in text
+        assert text == "📅 Today — Tue Jul 28\n\nDiwali [personal]"
 
     def test_errors_append_terse_footnote_not_raw_text(self):
         text = format_daily_brief([], [{"account": "broken", "message": "invalid_scope: Bad Request"}],
@@ -169,3 +176,65 @@ class TestFormatDailyBrief:
         ]
         text = format_daily_brief(events, [], date(2026, 7, 28))
         assert text.index("09:00 Standup") < text.index("13:00 Dentist")
+
+    def test_all_day_events_come_first_even_after_an_early_timed_event(self):
+        # list_events_for_range sorts all-day events at midnight UTC, i.e. 05:30 IST — after
+        # a 04:30 IST flight. The brief still lists the all-day event first.
+        ist = ZoneInfo("Asia/Kolkata")
+        events = [
+            {"account": "p", "title": "Early flight", "start": "2026-07-28T04:30:00+05:30",
+             "end": "2026-07-28T07:00:00+05:30", "all_day": False},
+            {"account": "p", "title": "Diwali", "start": "2026-07-28", "end": "2026-07-29",
+             "all_day": True},
+            {"account": "p", "title": "Standup", "start": "2026-07-28T09:00:00+05:30",
+             "end": "2026-07-28T09:30:00+05:30", "all_day": False},
+        ]
+        text = format_daily_brief(events, [], date(2026, 7, 28), tz=ist)
+        assert text.split("\n\n")[1].splitlines() == [
+            "Diwali [p]", "04:30 Early flight [p]", "09:00 Standup [p]",
+        ]
+
+    def test_times_are_shown_in_the_owners_zone(self):
+        events = [{"account": "w", "title": "Sync", "start": "2026-07-28T03:30:00Z",
+                   "end": "2026-07-28T04:00:00Z", "all_day": False}]
+        text = format_daily_brief(events, [], date(2026, 7, 28), tz=ZoneInfo("Asia/Kolkata"))
+        assert "09:00 Sync [w]" in text
+
+    def test_event_that_started_yesterday_shows_its_end(self):
+        ist = ZoneInfo("Asia/Kolkata")
+        events = [
+            {"account": "p", "title": "Red-eye", "start": "2026-07-27T22:00:00+05:30",
+             "end": "2026-07-28T06:00:00+05:30", "all_day": False},
+            {"account": "p", "title": "Conference", "start": "2026-07-27T09:00:00+05:30",
+             "end": "2026-07-29T18:00:00+05:30", "all_day": False},
+        ]
+        text = format_daily_brief(events, [], date(2026, 7, 28), tz=ist)
+        assert "until 06:00 Red-eye [p]" in text
+        assert "ongoing Conference [p]" in text
+        assert "22:00" not in text
+
+    def test_declined_invites_are_left_out(self):
+        events = [
+            {"account": "w", "title": "Optional sync", "start": "2026-07-28T10:00:00+05:30",
+             "end": "2026-07-28T10:30:00+05:30", "all_day": False, "declined": True},
+        ]
+        text = format_daily_brief(events, [], date(2026, 7, 28))
+        assert "Optional sync" not in text
+        assert "Nothing on the calendar today." in text
+
+    def test_every_account_failing_is_not_an_empty_day(self):
+        errors = [{"account": "a", "message": "invalid_grant"}, {"account": "b", "message": "x"}]
+        text = format_daily_brief([], errors, date(2026, 7, 28), accounts_checked=2)
+        assert text == "📅 Today — Tue Jul 28\n\n⚠ Couldn't read your calendar today."
+
+    def test_no_accounts_connected_is_not_an_empty_day(self):
+        text = format_daily_brief([], [], date(2026, 7, 28), accounts_checked=0)
+        assert text == "📅 Today — Tue Jul 28\n\n⚠ No calendar accounts connected."
+
+    def test_some_accounts_failing_still_shows_the_agenda(self):
+        events = [{"account": "a", "title": "Standup", "start": "2026-07-28T09:00:00+05:30",
+                   "end": "2026-07-28T09:30:00+05:30", "all_day": False}]
+        text = format_daily_brief(events, [{"account": "b", "message": "x"}], date(2026, 7, 28),
+                                  accounts_checked=2)
+        assert "09:00 Standup [a]" in text
+        assert text.endswith("⚠ 1 account unavailable")

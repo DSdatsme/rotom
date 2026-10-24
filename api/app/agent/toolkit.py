@@ -243,7 +243,8 @@ def cancel_reminder(reminder_id: int) -> str:
 
 @tool
 def run_workflow(name: str) -> str:
-    """Trigger an automation workflow by name (e.g. 'hello', 'morning-digest').
+    """Trigger an automation workflow by name ('hello', 'morning-digest',
+    'daily-calendar-brief', 'weekly-retro').
     Runs asynchronously — results/notifications arrive on Telegram."""
     import inngest as _i
 

@@ -113,9 +113,13 @@ auto-drafted replies · Conversational draft composer · Next.js dashboard with 
       calendar-only agenda (8:30am) and a Sunday-evening retro covering triage stats,
       draft activity, reminders, and workflow-run counts. Spec:
       `docs/superpowers/specs/2026-07-26-digest-synthesis-design.md`.
-  - [ ] `morning_digest.py` and `hello.py` still have the unprefixed-UTC cron bug fixed for
-        `daily_calendar_brief.py`/`weekly_retro.py` (see AGENTS.md's APScheduler timezone
-        gotcha — same trap, different scheduler); out of scope for this branch, fix separately.
+  - [x] `morning_digest.py` and `hello.py` crons now take the `TZ=` prefix from settings
+        too (they fired at 08:30/09:00 UTC before).
+  - [ ] `code_issue` never writes `CodingStatus.FAILED`: a run that exhausts its retries
+        stays `running`. The weekly retro counts one stale for 24h as a failure; an
+        `on_failure` handler (like `workflows/lib.record_failure`) would record it properly.
+  - [ ] The morning brief hides declined invites; whether Workspace `workingLocation`
+        entries also show up needs a check against a real account.
   - [ ] **Cross-source synthesis V2** (remaining backlog): meeting prep packets
         (match a calendar event to its related email thread); conflict-aware drafting
         (detect double-bookings across accounts, draft a decline/reschedule for

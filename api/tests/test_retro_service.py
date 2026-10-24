@@ -39,8 +39,17 @@ class TestTriageStats:
 
     def test_all_categories_present_even_at_zero(self, session_db):
         stats = triage_stats(WEEK_AGO)
-        assert set(stats.keys()) == {"critical", "needs_reply", "fyi", "skip"}
+        assert set(stats.keys()) == {"critical", "needs_reply", "fyi", "skip", "quarantined"}
         assert all(v == 0 for v in stats.values())
+
+    def test_quarantined_emails_are_counted_apart_from_skip(self, session_db):
+        with get_session() as s:
+            s.add(_make_email(Category.SKIP, NOW - timedelta(days=1)))
+            s.add(_make_email(Category.SKIP, NOW - timedelta(days=2), suspicious=True))
+
+        stats = triage_stats(WEEK_AGO)
+        assert stats["skip"] == 1
+        assert stats["quarantined"] == 1
 
 
 class TestDraftActivity:
@@ -108,8 +117,10 @@ class TestWorkflowRunStats:
                           started_at=NOW - timedelta(days=2)))
             s.add(RunLog(kind="morning_digest", source="inngest", status=RunStatus.SUCCESS,
                           started_at=TWO_WEEKS_AGO))  # outside window
-            s.add(RunLog(kind="gmail_triage", source="scheduler", status=RunStatus.SUCCESS,
+            s.add(RunLog(kind="morning_digest", source="manual", status=RunStatus.SUCCESS,
                           started_at=NOW - timedelta(days=1)))  # not source=inngest, excluded
+            s.add(RunLog(kind="gmail_triage", source="inngest", status=RunStatus.SUCCESS,
+                          started_at=NOW - timedelta(days=1)))  # not a workflow kind, excluded
             s.commit()  # get_obs_session() does not auto-commit (unlike get_session())
 
         with get_session() as s:
@@ -154,21 +165,105 @@ class TestWorkflowRunStats:
         stats = workflow_run_stats(WEEK_AGO)
         assert "weekly_retro" not in stats
 
+    def test_retried_attempts_of_one_inngest_run_count_once_with_the_latest_status(
+        self, session_db, obs_db
+    ):
+        """Each Inngest retry opens its own RunLog row; rows sharing the Inngest run id
+        (external_id) are one run, and the last attempt decides its status."""
+        with get_obs_session() as s:
+            day = NOW - timedelta(days=1)
+            s.add(RunLog(kind="morning_digest", source="inngest", status=RunStatus.FAILURE,
+                          external_id="run-a", started_at=day))
+            s.add(RunLog(kind="morning_digest", source="inngest", status=RunStatus.SUCCESS,
+                          external_id="run-a", started_at=day))  # retry fixed it
+            s.add(RunLog(kind="morning_digest", source="inngest", status=RunStatus.SUCCESS,
+                          external_id="run-b", started_at=day))
+            s.add(RunLog(kind="morning_digest", source="inngest", status=RunStatus.FAILURE,
+                          external_id="run-b", started_at=day))  # e.g. record_failure's row
+            s.add(RunLog(kind="morning_digest", source="inngest", status=RunStatus.DEGRADED,
+                          started_at=day))  # no external_id: counted on its own
+            s.add(RunLog(kind="daily_calendar_brief", source="inngest",
+                          status=RunStatus.INTERRUPTED, external_id="run-c", started_at=day))
+            s.commit()
+
+        stats = workflow_run_stats(WEEK_AGO)
+        assert stats["morning_digest"] == {"count": 3, "success": 1, "failure": 1, "degraded": 1}
+        assert stats["daily_calendar_brief"] == {"count": 1, "success": 0, "failure": 1, "degraded": 0}
+
+    def test_coding_runs_map_final_states_and_skip_ones_still_in_flight(self, session_db, obs_db):
+        stale = NOW - timedelta(hours=30)
+        with get_session() as s:
+            for number, status, updated in [
+                (1, CodingStatus.DONE, NOW), (2, CodingStatus.BLOCKED, NOW),
+                (3, CodingStatus.FAILED, NOW),
+                (4, CodingStatus.RUNNING, NOW - timedelta(hours=1)),  # in flight: not counted
+                (5, CodingStatus.RUNNING, stale),  # died without a final state
+                (6, CodingStatus.REVIEW, stale),
+            ]:
+                s.add(CodingRun(issue_url="u", repo="r", issue_number=number, status=status,
+                                created_at=NOW - timedelta(days=2), updated_at=updated))
+
+        stats = workflow_run_stats(WEEK_AGO, now=NOW)
+        assert stats["code_issue"] == {"count": 5, "success": 1, "failure": 3, "degraded": 1}
+
+    def test_unreadable_observability_db_returns_none(self, session_db, obs_db, monkeypatch):
+        import app.tools.retro.service as retro
+
+        def broken():
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(retro, "get_obs_session", broken)
+        assert workflow_run_stats(WEEK_AGO) is None
+
+
+class TestCompileWeeklyRetro:
+    def test_survives_an_unreadable_observability_db(self, session_db, obs_db, monkeypatch):
+        import app.tools.retro.service as retro
+
+        with get_session() as s:
+            s.add(_make_email(Category.CRITICAL, NOW - timedelta(days=1)))
+
+        def broken():
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(retro, "get_obs_session", broken)
+        text = retro.compile_weekly_retro(WEEK_AGO)
+        assert "1 critical" in text
+        assert "unavailable (couldn't read run history)" in text
+
 
 class TestFormatWeeklyRetro:
     def test_renders_all_four_sections(self):
         text = format_weekly_retro(
-            triage={"critical": 1, "needs_reply": 2, "fyi": 5, "skip": 3},
+            triage={"critical": 1, "needs_reply": 2, "fyi": 5, "skip": 3, "quarantined": 0},
             drafts={"sent": 4, "pending": 2, "discarded": 1},
             reminders={"fired": 3, "pending": 5},
             workflows={"morning_digest": {"count": 7, "success": 6, "failure": 1, "degraded": 0}},
         )
-        assert "1 critical" in text
-        assert "2 needs reply" in text
-        assert "4 sent" in text
-        assert "2 still pending" in text
-        assert "3 fired" in text
-        assert "morning_digest: 7 runs" in text
+        assert "  1 critical · 2 needs reply · 5 fyi · 3 skip\n" in text
+        assert "  4 sent · 2 still pending · 1 discarded\n" in text
+        assert "  3 fired · 5 pending\n" in text
+        assert "  morning_digest: 7 runs (6 success, 1 failure, 0 degraded)" in text
+        assert "quarantined" not in text
+
+    def test_quarantined_count_is_flagged(self):
+        text = format_weekly_retro(
+            triage={"critical": 0, "needs_reply": 0, "fyi": 0, "skip": 1, "quarantined": 2},
+            drafts={"sent": 0, "pending": 0, "discarded": 0},
+            reminders={"fired": 0, "pending": 0},
+            workflows={},
+        )
+        assert "1 skip · ⚠ 2 quarantined" in text
+
+    def test_unreadable_run_history_says_so(self):
+        text = format_weekly_retro(
+            triage={"critical": 0, "needs_reply": 0, "fyi": 0, "skip": 0},
+            drafts={"sent": 0, "pending": 0, "discarded": 0},
+            reminders={"fired": 0, "pending": 0},
+            workflows=None,
+        )
+        assert "unavailable (couldn't read run history)" in text
+        assert "none this week" not in text
 
     def test_no_workflow_runs_renders_none(self):
         text = format_weekly_retro(

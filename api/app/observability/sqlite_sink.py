@@ -83,17 +83,16 @@ class SqliteSink:
     def reap_stale_runs(self, *, timeout_seconds: int = 300) -> int:
         """Flip zombie `running` rows to `interrupted`.
 
-        A run is dead if it's still `running`, isn't an Inngest run (durable —
-        resumes on its own), and either its last heartbeat or (absent one) its
-        start time is older than `timeout_seconds`. Returns how many were reaped.
+        A run is dead if it's still `running` and either its last heartbeat or (absent
+        one) its start time is older than `timeout_seconds`. Inngest runs included: their
+        record_run lives inside one step in one process, so a stopped heartbeat means that
+        process died — Inngest's retry opens a new row rather than resuming this one.
+        Returns how many were reaped.
         """
         cutoff = utcnow() - timedelta(seconds=timeout_seconds)
         reaped = 0
         with get_obs_session() as session:
-            stmt = select(RunLog).where(
-                RunLog.status == RunStatus.RUNNING,
-                RunLog.source != "inngest",
-            )
+            stmt = select(RunLog).where(RunLog.status == RunStatus.RUNNING)
             for run in session.scalars(stmt).all():
                 hb = _as_utc(run.last_heartbeat_at)
                 started = _as_utc(run.started_at)

@@ -45,7 +45,10 @@ function buildQs(opts: {
 
 // Run kinds known to the backend (callers of record_run). Dynamic/extra kinds
 // seen in the loaded rows are merged in at render time.
-const KNOWN_KINDS = ["gmail_triage", "draft_generation", "reminder_fire", "code_review", "coder"];
+const KNOWN_KINDS = [
+  "gmail_triage", "draft_generation", "reminder_fire", "code_review", "coder",
+  "morning_digest", "daily_calendar_brief", "weekly_retro",
+];
 
 // ---- Level chip multi-select ------------------------------------------------
 

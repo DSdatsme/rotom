@@ -1,7 +1,7 @@
 """Merge calendar events across all accounts into one sorted, resilient list."""
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, tzinfo
 
 logger = logging.getLogger(__name__)
 
@@ -10,10 +10,15 @@ def _normalize_event(raw: dict, account: str) -> dict:
     """Flatten a Calendar API event resource into a flat display dict.
 
     All-day events carry date-only start/end (Google's end.date is exclusive of the last
-    day — multi-day all-day spanning is not rendered in v1, only the start day)."""
+    day — multi-day all-day spanning is not rendered in v1, only the start day).
+    `declined` is True when the account owner declined the invite (their own attendee
+    entry, `self: true`, has responseStatus "declined")."""
     start = raw.get("start", {})
     end = raw.get("end", {})
     all_day = "date" in start and "dateTime" not in start
+    declined = any(
+        a.get("self") and a.get("responseStatus") == "declined" for a in raw.get("attendees") or []
+    )
     return {
         "account": account,
         "event_id": raw.get("id", ""),
@@ -22,6 +27,7 @@ def _normalize_event(raw: dict, account: str) -> dict:
         "end": end.get("date") if all_day else end.get("dateTime", ""),
         "all_day": all_day,
         "location": raw.get("location") or None,
+        "declined": declined,
     }
 
 
@@ -75,23 +81,58 @@ def list_events_for_range(
     return events, errors
 
 
-def format_daily_brief(events: list[dict], errors: list[dict], today: date) -> str:
-    """Plain-text daily brief for Telegram: today's events in the order given (callers
-    pass output straight from list_events_for_range, already chronologically sorted).
-    All-day events render without a time prefix. A non-empty errors list appends one
-    terse footnote — never the raw per-account error text, which is dashboard-appropriate
+def _parse_local(value: str, tz: tzinfo | None) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed.astimezone(tz) if tz is not None else parsed
+
+
+def _time_label(event: dict, today: date, tz: tzinfo | None) -> str:
+    """"HH:MM" in `tz` for an event starting today. An event that started before today
+    (overnight, or multi-day) shows when it ends instead, so it can't read as a start
+    time today."""
+    start = _parse_local(event["start"], tz)
+    if start is None:
+        return "--:--"
+    if start.date() >= today:
+        return f"{start:%H:%M}"
+    end = _parse_local(event["end"], tz)
+    if end is not None and end.date() == today:
+        return f"until {end:%H:%M}"
+    return "ongoing"
+
+
+def format_daily_brief(
+    events: list[dict],
+    errors: list[dict],
+    today: date,
+    *,
+    tz: tzinfo | None = None,
+    accounts_checked: int | None = None,
+) -> str:
+    """Plain-text daily brief for Telegram. All-day events come first, then timed events in
+    the order given (list_events_for_range output is already chronological); declined
+    invites are left out. Times are shown in `tz` (the owner's zone).
+
+    `accounts_checked` (how many accounts were queried) lets an unreadable calendar say so
+    instead of passing for an empty day: zero accounts, or every account failing, gives a
+    warning in place of the agenda. Otherwise a non-empty errors list appends one terse
+    footnote — never the raw per-account error text, which is dashboard-appropriate
     detail, not Telegram brevity."""
     header = f"📅 Today — {today:%a %b} {today.day}"
-    if not events:
-        body = "Nothing on the calendar today."
-    else:
-        lines = []
-        for ev in events:
-            if ev["all_day"]:
-                lines.append(f"{ev['title']} [{ev['account']}]")
-            else:
-                lines.append(f"{ev['start'][11:16]} {ev['title']} [{ev['account']}]")
-        body = "\n".join(lines)
+    if accounts_checked == 0:
+        return f"{header}\n\n⚠ No calendar accounts connected."
+    if accounts_checked is not None and errors and len(errors) >= accounts_checked:
+        return f"{header}\n\n⚠ Couldn't read your calendar today."
+
+    shown = [ev for ev in events if not ev.get("declined")]
+    all_day = [ev for ev in shown if ev["all_day"]]
+    timed = [ev for ev in shown if not ev["all_day"]]
+    lines = [f"{ev['title']} [{ev['account']}]" for ev in all_day]
+    lines += [f"{_time_label(ev, today, tz)} {ev['title']} [{ev['account']}]" for ev in timed]
+    body = "\n".join(lines) if lines else "Nothing on the calendar today."
     text = f"{header}\n\n{body}"
     if errors:
         n = len(errors)

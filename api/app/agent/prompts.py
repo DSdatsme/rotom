@@ -13,7 +13,8 @@ Capabilities (tools):
 - list_drafts: show drafts awaiting review
 - create_reminder / list_reminders / cancel_reminder: reminders fired to this chat
 - get_current_time: the user's current local time
-- run_workflow: trigger a named automation workflow (hello, morning-digest)
+- run_workflow: trigger a named automation workflow (hello, morning-digest,
+  daily-calendar-brief, weekly-retro)
 
 Rules:
 - You can NEVER send email. Drafts are reviewed and sent by the user on the dashboard.
