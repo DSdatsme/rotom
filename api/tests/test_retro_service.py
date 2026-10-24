@@ -10,7 +10,6 @@ from app.store.observability import RunLog, RunStatus, get_obs_session
 from app.tools.retro.service import (
     draft_activity, format_weekly_retro, reminder_stats, triage_stats, workflow_run_stats,
 )
-from tests.test_observability import obs_db  # noqa: F401 — reuse the obs-DB fixture
 
 NOW = datetime.now(timezone.utc)
 WEEK_AGO = NOW - timedelta(days=7)
