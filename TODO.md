@@ -108,6 +108,22 @@ auto-drafted replies · Conversational draft composer · Next.js dashboard with 
           `auth_setup.py <account>` again") would help.
     - [ ] Overlapping same-day timed events currently render fully-overlapping (no
           side-by-side/column layout) — fine for light days, not for busy merged calendars.
+- [x] **Digest synthesis — morning brief + weekly retro** (`tools/retro/`,
+      `workflows/daily_calendar_brief.py`, `workflows/weekly_retro.py`): a daily
+      calendar-only agenda (8:30am) and a Sunday-evening retro covering triage stats,
+      draft activity, reminders, and workflow-run counts. Spec:
+      `docs/superpowers/specs/2026-07-26-digest-synthesis-design.md`.
+  - [x] `morning_digest.py` and `hello.py` crons now take the `TZ=` prefix from settings
+        too (they fired at 08:30/09:00 UTC before).
+  - [ ] `code_issue` never writes `CodingStatus.FAILED`: a run that exhausts its retries
+        stays `running`. The weekly retro counts one stale for 24h as a failure; an
+        `on_failure` handler (like `workflows/lib.record_failure`) would record it properly.
+  - [ ] The morning brief hides declined invites; whether Workspace `workingLocation`
+        entries also show up needs a check against a real account.
+  - [ ] **Cross-source synthesis V2** (remaining backlog): meeting prep packets
+        (match a calendar event to its related email thread); conflict-aware drafting
+        (detect double-bookings across accounts, draft a decline/reschedule for
+        approval — must go through the existing HITL send-gate, never auto-send).
 
 ## Iteration 5 — Memory & channels (from blueprint)
 

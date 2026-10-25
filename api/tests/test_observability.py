@@ -146,7 +146,7 @@ def test_reaper_marks_stale_running_run_interrupted(obs_db):
     assert done["finished_at"] is not None
 
 
-def test_reaper_spares_recent_and_inngest_runs(obs_db):
+def test_reaper_spares_recent_runs_and_reaps_stale_inngest_runs(obs_db):
     from datetime import datetime, timedelta, timezone
     from app.observability.sqlite_sink import SqliteSink
     from app.observability.events import RunStart
@@ -154,18 +154,20 @@ def test_reaper_spares_recent_and_inngest_runs(obs_db):
 
     sink = SqliteSink()
     fresh = sink.start_run(RunStart(kind="gmail_triage", source="scheduler"))  # just started, heartbeat now
-    inngest = sink.start_run(RunStart(kind="workflow:x", source="inngest"))
+    fresh_inngest = sink.start_run(RunStart(kind="weekly_retro", source="inngest"))
+    dead_inngest = sink.start_run(RunStart(kind="workflow:x", source="inngest"))
 
-    # Make the inngest run look ancient — it must STILL be spared.
+    # An Inngest step's record_run lives in one process: a long-silent heartbeat means it died.
     with get_obs_session() as s:
-        row = s.get(RunLog, int(inngest))
+        row = s.get(RunLog, int(dead_inngest))
         row.started_at = datetime.now(timezone.utc) - timedelta(hours=2)
         row.last_heartbeat_at = None
         s.commit()
 
-    assert sink.reap_stale_runs() == 0
+    assert sink.reap_stale_runs() == 1
     assert sink.get_run(fresh)["status"] == RunStatus.RUNNING
-    assert sink.get_run(inngest)["status"] == RunStatus.RUNNING
+    assert sink.get_run(fresh_inngest)["status"] == RunStatus.RUNNING
+    assert sink.get_run(dead_inngest)["status"] == RunStatus.INTERRUPTED
 
 
 def test_record_run_runs_body_when_sink_is_down(obs_db, monkeypatch):

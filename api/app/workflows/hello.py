@@ -4,15 +4,18 @@ import datetime
 
 import inngest
 
+from app.config import get_settings
 from app.workflows.client import inngest_client
 from app.workflows.lib import notify
+
+_settings = get_settings()
 
 
 @inngest_client.create_function(
     fn_id="hello",
     trigger=[
         inngest.TriggerEvent(event="workflows/hello.requested"),
-        inngest.TriggerCron(cron="0 9 * * *"),
+        inngest.TriggerCron(cron=f"TZ={_settings.timezone} 0 9 * * *"),
     ],
     retries=2,
 )
